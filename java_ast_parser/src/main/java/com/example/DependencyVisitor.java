@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Stack;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.concurrent.*;
 
 import com.example.dependencies.*;
 import com.github.javaparser.JavaParser;
@@ -129,7 +130,6 @@ public class DependencyVisitor extends VoidVisitorAdapter<NodeContext> {
                 .continuousUpdate()
                 .build();) {
             for (File file : javaFiles) {
-                pb.step();
                 try {
                     CompilationUnit cu = javaParser.parse(file).getResult()
                             .orElseThrow(() -> new IOException("解析失败: " + file));
@@ -138,6 +138,7 @@ public class DependencyVisitor extends VoidVisitorAdapter<NodeContext> {
                 } catch (IOException e) {
                     logger.error("Error parsing file: " + file, e);
                 }
+                pb.step();
             }
         }
 
@@ -152,6 +153,10 @@ public class DependencyVisitor extends VoidVisitorAdapter<NodeContext> {
     }
 
     private void writeDependency(Dependency dependency) {
+        if (dependencyWriter == null) {
+            logger.error("Dependency writer is not initialized");
+            return;
+        }
         try {
             dependencyWriter.write(dependency.toCsvFormat() + "\n");
             dependencyWriter.flush();
@@ -161,6 +166,10 @@ public class DependencyVisitor extends VoidVisitorAdapter<NodeContext> {
     }
 
     private void writeClassInfo(ClassInfo classInfo) {
+        if (classInfoWriter == null) {
+            logger.error("Class info writer is not initialized");
+            return;
+        }
         try {
             classInfoWriter.write(classInfo.toCsvFormat() + "\n");
             classInfoWriter.flush();
@@ -173,7 +182,14 @@ public class DependencyVisitor extends VoidVisitorAdapter<NodeContext> {
     public void visit(ClassOrInterfaceDeclaration cid, NodeContext arg) {
         classStack.push(currentClassName);
         NodeContext parentContext = currentContext;
-        currentClassName = cid.resolve().getQualifiedName();
+        try {
+            currentClassName = cid.resolve().getQualifiedName();
+        } catch (IllegalStateException e) {
+            logger.warn("Symbol resolution not configured for class: {} in file {} at line {}", cid.getNameAsString(),
+                    currentFilePath, getLineNumber(cid));
+            classStack.pop();
+            return;
+        }
         currentContext = new NodeContext(parentContext, currentClassName);
 
         if (dependencyWriter != null) {
@@ -329,6 +345,11 @@ public class DependencyVisitor extends VoidVisitorAdapter<NodeContext> {
 
     @Override
     public void visit(MethodDeclaration md, NodeContext arg) {
+        if (currentContext == null) {
+            logger.error("Current context is null");
+            System.out.println("");
+            return;
+        }
         NodeContext parentContext = currentContext;
         String methodIdentifier = getMethodIdentifier(md);
         currentContext = new NodeContext(parentContext, parentContext.getName() + "$" + methodIdentifier);
@@ -503,6 +524,8 @@ public class DependencyVisitor extends VoidVisitorAdapter<NodeContext> {
         } catch (UnsolvedSymbolException e) {
             logger.warn("无法解析静态成员: {} -> {} in file {} at line {}", currentClassName, fae.getName(),
                     currentFilePath, getLineNumber(fae));
+        } catch (Exception e) {
+            logger.warn("无法解析字段访问: {} in file {} at line {}", fae, currentFilePath, getLineNumber(fae));
         }
     }
 
@@ -537,7 +560,8 @@ public class DependencyVisitor extends VoidVisitorAdapter<NodeContext> {
 
     // 获取类型的全限定名
     private String resolveQualifiedTypeName(Type type) throws UnsolvedSymbolException {
-        try {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<String> future = executor.submit(() -> {
             if (type.isPrimitiveType() || type.isVoidType()) {
                 return null; // 基本类型和 void 返回 null
             }
@@ -558,9 +582,22 @@ public class DependencyVisitor extends VoidVisitorAdapter<NodeContext> {
                 }
             }
             return type.resolve().describe();
-        } catch (UnsolvedSymbolException e) {
-            logger.warn("无法解析类型: {} in file {} at line {}", type, currentFilePath, getLineNumber(type));
-            throw e;
+        });
+
+        try {
+            return future.get(20, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            logger.error("解析类型时超时: {} in file {} at line {}", type, currentFilePath, getLineNumber(type));
+            System.out.println("");
+            throw new UnsolvedSymbolException("解析类型超时: " + type.toString());
+        } catch (InterruptedException | ExecutionException e) {
+            logger.warn("解析类型时发生错误: {} in file {} at line {}", e.getClass().getName(), currentFilePath,
+                    getLineNumber(type));
+            // System.out.println("");
+            throw new UnsolvedSymbolException(type.toString());
+        } finally {
+            executor.shutdown();
         }
     }
 }

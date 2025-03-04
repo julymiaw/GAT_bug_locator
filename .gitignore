@@ -2,3 +2,15 @@ source
 output
 .vscode
 target
+dataset
+__pycache__
+*.pyc
+bug_report
+features/aspectj
+features/birt
+features/eclipse_platform_ui
+features/swt
+features/tomcat
+features/jdt
+*.exe
+joblib_memmap_*

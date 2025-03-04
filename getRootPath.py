@@ -28,7 +28,7 @@ def extract_package_from_java_file(java_file):
 
 def find_root_path_for_java_file(java_file, package):
     if package is None:
-        return None
+        return os.path.dirname(java_file)  # 没有包时，根路径就是文件本身的路径
     package_path = package.replace(".", os.sep)
     java_file_dir = os.path.dirname(java_file)
     root_path = java_file_dir
@@ -50,6 +50,7 @@ def find_all_java_roots(directory):
     return java_roots
 
 
+# 获取每个根路径删除后的损失
 def calculate_unique_classes(java_roots):
     unique_classes = defaultdict(int)
     for _, roots in java_roots.items():
@@ -96,6 +97,13 @@ def filter_conflicting_roots(java_roots, unique_classes, priority):
     return all_roots - deleted_roots
 
 
+def ignore_conflicting_roots(java_roots):
+    all_roots = set()
+    for _, roots in java_roots.items():
+        all_roots.update(roots)
+    return all_roots
+
+
 def main(directory, check_conflicts_only, priority, ignore_conflicts):
     java_roots = find_all_java_roots(directory)
     unique_classes = calculate_unique_classes(java_roots)
@@ -128,11 +136,13 @@ def main(directory, check_conflicts_only, priority, ignore_conflicts):
                     f.write("\n")
         return
 
-    if not ignore_conflicts:
-        java_roots = filter_conflicting_roots(java_roots, unique_classes, priority)
+    if ignore_conflicts:
+        all_roots = ignore_conflicting_roots(java_roots)
+    else:
+        all_roots = filter_conflicting_roots(java_roots, unique_classes, priority)
 
     with open(os.path.join(output_dir, "javaRoots.txt"), "w") as f:
-        for path in java_roots:
+        for path in all_roots:
             f.write(f"{path}\n")
 
 

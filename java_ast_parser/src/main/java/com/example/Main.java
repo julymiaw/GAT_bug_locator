@@ -15,7 +15,7 @@ public class Main {
         // 从 javaRoots.txt 文件中读取 sourceDirectories
         List<File> sourceDirectories = new ArrayList<>();
         try (BufferedReader reader = new BufferedReader(
-                new FileReader("javaRoots.txt"))) {
+                new FileReader("output/tomcat_dataset/javaRoots.txt"))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 sourceDirectories.add(new File(line));
@@ -25,9 +25,9 @@ public class Main {
         }
 
         config.setSourceDirectories(sourceDirectories);
-        config.setOutputDirectory(new File("output"));
+        config.setOutputDirectory(new File("output/tomcat_dataset"));
         config.setDirectoriesToParse(sourceDirectories);
-        config.setProjectRoot(new File("sources/plugins"));
+        config.setProjectRoot(new File("source/tomcat_dataset/"));
 
         // 创建 DependencyVisitor 并处理
         DependencyVisitor visitor = new DependencyVisitor(config);
