@@ -6,6 +6,7 @@
 Requires results of save_normalized_fold_dataframes.py
 """
 
+import os
 import json
 import time
 import argparse
@@ -905,6 +906,8 @@ def process(
     eprint("mean_time_file_training", mean_time_file_training)
 
     results_timestamp = time.strftime("%Y%m%d%H%M%S")
+    result_dir = f"{file_prefix}_{results_timestamp}"
+    os.makedirs(result_dir, exist_ok=True)
 
     training_time = {
         "time_sum": time_sum,
@@ -914,33 +917,31 @@ def process(
         "mean_time_file_training": mean_time_file_training,
     }
     with open(
-        f"{file_prefix}_{ptemplate.name}_training_time_{results_timestamp}.json", "w"
+        os.path.join(result_dir, f"{ptemplate.name}_training_time.json"), "w"
     ) as time_file:
         json.dump(training_time, time_file)
 
     prescoring_log = ptemplate.prescoring_log.copy()
     with open(
-        f"{file_prefix}_{ptemplate.name}_prescoring_log_{results_timestamp}.json", "w"
+        os.path.join(result_dir, f"{ptemplate.name}_prescoring_log.json"), "w"
     ) as prescoring_log_file:
         json.dump(prescoring_log, prescoring_log_file)
 
     regression_log = ptemplate.regression_log.copy()
     with open(
-        f"{file_prefix}_{ptemplate.name}_regression_log_{results_timestamp}.json", "w"
+        os.path.join(result_dir, f"{ptemplate.name}_regression_log.json"), "w"
     ) as regression_log_file:
         json.dump(regression_log, regression_log_file)
 
     best_prescoring_log = ptemplate.best_prescoring_log.copy()
     with open(
-        f"{file_prefix}_{ptemplate.name}_best_prescoring_log_{results_timestamp}.json",
-        "w",
+        os.path.join(result_dir, f"{ptemplate.name}_best_prescoring_log.json"), "w"
     ) as best_prescoring_log_file:
         json.dump(best_prescoring_log, best_prescoring_log_file)
 
     best_regression_log = ptemplate.best_regression_log.copy()
     with open(
-        f"{file_prefix}_{ptemplate.name}_best_regression_log_{results_timestamp}.json",
-        "w",
+        os.path.join(result_dir, f"{ptemplate.name}_best_regression_log.json"), "w"
     ) as best_regression_log_file:
         json.dump(best_regression_log, best_regression_log_file)
 
@@ -1319,7 +1320,7 @@ def main():
         )
 
     results = [r for r in results if r is not None]
-    eprint("Results")
+    eprint("======Results======")
     for result in results:
         print("name ", result["name"])
         print_metrics(*result["results"])
