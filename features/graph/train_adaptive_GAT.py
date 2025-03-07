@@ -60,6 +60,18 @@ class GATModule(nn.Module):
         self.node_lin = nn.Linear(node_dim, hidden_dim)
         self.use_gat = len(heads) > 0
 
+        # MLP流 - 仅处理节点特征
+        self.mlp_stream = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.PReLU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(hidden_dim * 2),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.PReLU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(hidden_dim),
+        )
+
         # 边特征变换为权重
         if self.use_gat:
             self.edge_lin = nn.Linear(edge_dim, hidden_dim // 4)
@@ -91,46 +103,83 @@ class GATModule(nn.Module):
                     )
                 )
 
-            # 层间激活和正则化
-            self.layer_norm = nn.LayerNorm(hidden_dim * heads[-1])
-            self.final_dim = hidden_dim * heads[-1]
+            # GAT流的输出层
+            self.gat_out = nn.Linear(hidden_dim * heads[-1], hidden_dim)
+
+            # 边密度感知器 - 决定两个流的权重
+            self.density_encoder = nn.Sequential(
+                nn.Linear(2, 16),  # 输入：[节点数, 边/节点比]
+                nn.ReLU(),
+                nn.Linear(16, 1),
+                nn.Sigmoid(),
+            )
         else:
-            self.final_dim = hidden_dim
-            self.layer_norm = nn.LayerNorm(hidden_dim)
+            # 无GAT时使用额外的MLP层增强表达能力
+            self.enhanced_mlp = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.PReLU(),
+                nn.Dropout(dropout),
+                nn.LayerNorm(hidden_dim),
+            )
 
         # 共用组件
-        self.activation = nn.PReLU()
         self.dropout = nn.Dropout(dropout)
+        self.activation = nn.PReLU()
+        self.layer_norm = nn.LayerNorm(hidden_dim)
 
         # 预测层
-        self.out_lin1 = nn.Linear(self.final_dim, hidden_dim)
+        self.out_lin1 = nn.Linear(hidden_dim, hidden_dim)
         self.out_lin2 = nn.Linear(hidden_dim, 1)
 
     def forward(self, x, edge_index, edge_attr):
         # 节点特征变换
         x = self.node_lin(x)
-        x = F.relu(x)
+        h_shared = F.relu(x)
+
+        # MLP流处理
+        mlp_out = self.mlp_stream(h_shared)
 
         if self.use_gat:
+            # 计算图密度特征
+            num_nodes = x.shape[0]
+            num_edges = edge_index.shape[1]
+            edge_density = num_edges / num_nodes
+            density_feat = torch.tensor(
+                [[float(num_nodes), float(edge_density)]],
+                device=x.device,
+                dtype=torch.float,
+            )
+
             # 边特征处理
             edge_emb = self.edge_lin(edge_attr)
             edge_emb = self.activation(edge_emb)
             edge_weights = torch.sigmoid(self.edge_proj(edge_emb)).squeeze(-1)
 
             # 多层GAT处理
+            h_gat = h_shared
             for i, gat_layer in enumerate(self.gat_layers):
                 if i == 0:
-                    x = gat_layer(x, edge_index, edge_attr=edge_weights)
+                    h_gat = gat_layer(h_gat, edge_index, edge_attr=edge_weights)
                 else:
                     # 添加残差连接
-                    identity = x
-                    x = gat_layer(x, edge_index, edge_attr=edge_weights)
-                    if identity.shape[-1] == x.shape[-1]:  # 维度匹配时添加残差
-                        x = x + identity
+                    identity = h_gat
+                    h_gat = gat_layer(h_gat, edge_index, edge_attr=edge_weights)
+                    if identity.shape[-1] == h_gat.shape[-1]:  # 维度匹配时添加残差
+                        h_gat = h_gat + identity
 
                 if i < len(self.gat_layers) - 1:  # 非最后一层
-                    x = self.activation(x)
-                    x = self.dropout(x)
+                    h_gat = self.activation(h_gat)
+                    h_gat = self.dropout(h_gat)
+
+            # GAT流输出
+            gat_out = self.gat_out(h_gat)
+
+            # 自适应融合
+            alpha = self.density_encoder(density_feat).expand(x.size(0), -1)
+            x = alpha * gat_out + (1 - alpha) * mlp_out
+        else:
+            # 无GAT时使用增强的MLP
+            x = mlp_out + self.enhanced_mlp(h_shared)
 
         # 最终层规范化和预测
         x = self.layer_norm(x)
@@ -160,7 +209,7 @@ class GATRegressor:
         loss="MSE",
         penalty="l2",
         l1_ratio=0.15,
-        max_iter=1000,
+        max_iter=500,
         tol=1e-4,
         shuffle=True,
         epsilon=0.1,
@@ -168,6 +217,7 @@ class GATRegressor:
         lr=0.0001,
         warm_start=False,
         n_iter_no_change=5,
+        use_self_loops_only=False,
     ):
         """
         初始化回归器
@@ -222,19 +272,24 @@ class GATRegressor:
             torch.manual_seed(self.random_state)
             np.random.seed(self.random_state)
 
+        # 仅使用自环
+        self.use_self_loops_only = use_self_loops_only
+
     def __str__(self):
         """返回模型的字符串表示，用于映射和调试"""
         # 正则化类型
         penalty_str = self.penalty if self.penalty is not None else "none"
 
         # 注意力头数
-        heads_str = (
-            "_".join([str(h) for h in self.heads])
-            if isinstance(self.heads, list)
-            else str(self.heads)
-        )
+        if len(self.heads) == 0:
+            heads_str = "nohead"  # 特殊标识符表示无GAT层的MLP模型
+        else:
+            heads_str = "_".join([str(h) for h in self.heads])
 
-        base_str = f"GATRegressor_{self.loss}_{self.hidden_dim}_{penalty_str}_{heads_str}_lr{self.lr}"
+        base_str = f"GATRegressor_{self.loss}_{self.hidden_dim}_{penalty_str}_{heads_str}_a{self.alpha}_dr{self.dropout}_lr{self.lr}"
+
+        if self.use_self_loops_only:
+            base_str += "_selfloop"
 
         if self.shuffle:
             base_str += "_shuf"
@@ -257,14 +312,19 @@ class GATRegressor:
             data_list: 每个bug对应的PyG Data对象列表
         """
         data_list: List[Data] = []
-        bug_ids = node_features.index.levels[0].unique()
 
-        for bug_id in bug_ids:
+        for bug_id in node_features.index.get_level_values(0).unique():
+            if bug_id not in node_features.index:
+                eprint(f"警告: bug ID {bug_id} 在节点数据索引中不存在，跳过")
+                continue
             # 获取该bug的节点特征
             bug_nodes = node_features.loc[bug_id]
 
             # 获取文件ID列表及其映射
             file_ids = bug_nodes.index.tolist()
+            if len(file_ids) == 0:
+                eprint(f"警告: bug ID {bug_id} 没有关联文件，跳过")
+                continue
             file_to_idx = {file_id: idx for idx, file_id in enumerate(file_ids)}
 
             # 准备节点特征
@@ -277,29 +337,41 @@ class GATRegressor:
                 -1, 1
             )
 
-            # 获取该bug的边信息
-            bug_edges = edge_features[edge_features.index == bug_id]
-
-            if len(bug_edges) > 0:
-                # 使用pandas向量化操作映射source和target到索引
-                source_indices = bug_edges["source"].map(file_to_idx).values
-                target_indices = bug_edges["target"].map(file_to_idx).values
-
-                # 准备边索引和边特征
-                edge_index = torch.tensor(
-                    np.vstack([source_indices, target_indices]), dtype=torch.long
-                )
-                edge_attr = torch.tensor(
-                    bug_edges[self.dependency_feature_columns].values, dtype=torch.float
-                )
-            else:
-                # 如果没有边，创建自环
+            if self.use_self_loops_only or bug_id not in edge_features.index:
+                # 创建自环
                 edge_index = torch.stack(
                     [torch.arange(len(file_ids)), torch.arange(len(file_ids))]
                 )
                 edge_attr = torch.zeros(
                     (len(file_ids), len(self.dependency_feature_columns))
                 )
+                if bug_id not in edge_features.index:
+                    eprint(f"警告: bug ID {bug_id} 在边数据中不存在")
+            else:
+                # 获取该bug的边信息
+                bug_edges = edge_features.loc[bug_id]
+                if len(bug_edges) > 0:
+                    # 使用pandas向量化操作映射source和target到索引
+                    source_indices = bug_edges["source"].map(file_to_idx).values
+                    target_indices = bug_edges["target"].map(file_to_idx).values
+
+                    # 准备边索引和边特征
+                    edge_index = torch.tensor(
+                        np.vstack([source_indices, target_indices]), dtype=torch.long
+                    )
+                    edge_attr = torch.tensor(
+                        bug_edges[self.dependency_feature_columns].values,
+                        dtype=torch.float,
+                    )
+                else:
+                    # 如果没有边，创建自环
+                    edge_index = torch.stack(
+                        [torch.arange(len(file_ids)), torch.arange(len(file_ids))]
+                    )
+                    edge_attr = torch.zeros(
+                        (len(file_ids), len(self.dependency_feature_columns))
+                    )
+                    eprint(f"警告: bug ID {bug_id} 的边数据为空，使用自环")
 
             # 创建数据对象
             data = Data(
@@ -377,9 +449,14 @@ class GATRegressor:
         self.criterion = self._get_criterion()
 
         # 创建优化器
-        self.optimizer = Adam(
-            self.model.parameters(), lr=self.lr, weight_decay=self.alpha
-        )
+        if self.penalty == "l2":
+            # 对于L2正则化，只使用Adam的weight_decay参数
+            self.optimizer = Adam(
+                self.model.parameters(), lr=self.lr, weight_decay=self.alpha
+            )
+        else:
+            # 对于L1和elasticnet正则化，使用手动正则化
+            self.optimizer = Adam(self.model.parameters(), lr=self.lr, weight_decay=0)
 
         # 训练循环
         self.model.train()
@@ -388,6 +465,11 @@ class GATRegressor:
 
         # 全部数据一次性加载到内存
         all_data = [data.to(self.device) for data in data_list]
+
+        # 确保all_data不为空
+        if len(all_data) == 0:
+            eprint("错误: 没有有效的训练数据")
+            return self
 
         # 提前停止条件的监控变量
         best_weights = None
@@ -408,8 +490,9 @@ class GATRegressor:
                 # 计算损失
                 loss = self.criterion(out, data.y)
 
-                # 添加正则化
-                loss += self._get_reg_loss(self.model)
+                # 仅当非L2正则化或无正则化时添加手动正则化
+                if self.penalty != "l2" and self.penalty is not None:
+                    loss += self._get_reg_loss(self.model)
 
                 # 反向传播
                 loss.backward()
@@ -539,6 +622,7 @@ class Adaptive_Process(object):
         self.weights = None  # 当前最佳特征权重向量（np.ndarray）
         self.weights_score = 0  # 当前最佳权重方法得分
         self.reg_model = None  # 当前选择的回归模型对象
+        self.all_reg_models = {}  # 所有回归模型对象
         self.reg_model_score = 0  # 当前最佳回归模型得分
         self.score_method = None  # 当前选择的评分方法（函数引用）
         # endregion
@@ -548,15 +632,20 @@ class Adaptive_Process(object):
         self.use_prescoring_always = False  # 是否始终使用预评分权重
         self.use_reg_model_always = True  # 是否强制使用回归模型
         self.use_prescoring_cross_validation = True  # 权重计算阶段交叉验证开关
-        self.cross_validation_fold_number = 2  # 交叉验证折数
+        self.use_training_cross_validation = True
+        self.cross_validation_fold_number = 5  # 交叉验证折数
         # endregion
 
         # region 性能日志
-        self.training_time_list = []  # 各折训练耗时：(总时间, 缺陷报告数, 文件数)
-        self.prescoring_log = []  # 权重方法评估：(方法名, (权重向量, 评估得分))
-        self.best_prescoring_log = []  # 各折最佳权重： (方法名, 评估得分)
-        self.regression_log = []  # 回归模型评估：(模型名, 筛选方法名, 评分方法名, 得分)
-        self.best_regression_log = []  # 各折最佳模型，格式同regression_log
+        self.training_time_stats = (
+            {}
+        )  # {折号: {"time": 时间, "bugs": 缺陷数, "files": 文件数}}
+        self.prescoring_log = {}  # {fold_num: {方法名: 评估得分}}
+        self.best_prescoring_log = {}  # {fold_num: 最佳权重方法名}
+        self.regression_log = {}  # 回归模型评估：{折号: {模型名: 评估得分}}
+        self.cv_regression_log = {}  # {fold_num: {模型名: [各折CV得分]}}
+        self.prediction_log = {}  # 预测结果日志：{折号: {模型名: 评估得分}}
+        self.best_regression_log = {}  # {fold_num: 最佳模型名}
         # endregion
 
         # region 配置映射表（内部使用）
@@ -628,7 +717,11 @@ class Adaptive_Process(object):
             self.weights = dict(results)
 
     def adapt_process(
-        self, df: pd.DataFrame, columns: List[str], dependency_df: pd.DataFrame
+        self,
+        df: pd.DataFrame,
+        columns: List[str],
+        dependency_df: pd.DataFrame,
+        fold_num=0,
     ):
         """
         自适应训练核心流程
@@ -655,9 +748,13 @@ class Adaptive_Process(object):
         w_maks: float = 0
         w_method: str = None
         w_weights: np.ndarray = None
+
+        if fold_num not in self.prescoring_log:
+            self.prescoring_log[fold_num] = {}
+
         for k, v in self.weights.items():
             # 存储每种方法的评估结果
-            self.prescoring_log.append((k, v[1]))
+            self.prescoring_log[fold_num][k] = v[1]
             # 记录最佳方法
             if v[1] > w_maks:
                 w_maks = v[1]
@@ -667,7 +764,8 @@ class Adaptive_Process(object):
         self.weights = w_weights
         self.weights_score = w_maks
         eprint(f"Best weights method: {w_method} MAP: {w_maks}")
-        self.best_prescoring_log.append((w_method, w_maks))
+
+        self.best_prescoring_log[fold_num] = w_method
         eprint("===============")
 
         eprint("=============== Size and regression model select")
@@ -685,32 +783,37 @@ class Adaptive_Process(object):
         )
 
         res_max = 0
-        for res in results:
-            current_reg_model = res[0]
-            current_score_function = res[1]
-            current_score = res[2]
+        self.regression_log[fold_num] = {}
+        self.cv_regression_log[fold_num] = {}
 
-            self.regression_log.append(
-                (str(current_reg_model), current_score_function, current_score)
-            )
+        for res in results:
+            current_reg_model, current_score_function, current_score, cv_results = res
+            current_model_name = str(current_reg_model)
+
+            self.all_reg_models[current_model_name] = current_reg_model
+            self.regression_log[fold_num][current_model_name] = current_score
             if current_score > res_max:
                 res_max = current_score
                 self.reg_model = current_reg_model
-                self.reg_model_name = str(current_reg_model)
+                self.reg_model_name = current_model_name
                 self.score_method_name = current_score_function
+            # 如果有CV结果，合并到主日志中
+            if cv_results:
+                for model_name, scores in cv_results.items():
+                    self.cv_regression_log[fold_num][model_name] = scores
 
         self.score_method = self.score_methods_map[self.score_method_name]
 
         self.reg_model_score = res_max
         current_reg_model = self.reg_model
-        self.best_regression_log.append(
-            (self.reg_model_name, self.score_method_name, self.reg_model_score)
-        )
+        self.best_regression_log[fold_num] = self.reg_model_name
 
-        eprint(self.reg_model_name, self.score_method_name, self.reg_model_score)
+        eprint(
+            f"Best Regression Model: {self.reg_model_name} MAP: {self.reg_model_score}"
+        )
         eprint("===============")
 
-    def train(self, df: pd.DataFrame, dependency_df: pd.DataFrame):
+    def train(self, df: pd.DataFrame, dependency_df: pd.DataFrame, fold_num):
         """
         训练入口函数
 
@@ -729,21 +832,25 @@ class Adaptive_Process(object):
         before_training = default_timer()
         columns = node_feature_columns.copy()
 
-        self.adapt_process(df, columns, dependency_df)
+        self.adapt_process(df, columns, dependency_df, fold_num)
 
         after_training = default_timer()
         total_training = after_training - before_training
-        self.training_time_list.append(
-            (
-                total_training,
-                df.index.get_level_values(0).unique().shape[0],
-                df.index.get_level_values(1).unique().shape[0],
-            )
-        )
+        self.training_time_stats[fold_num] = {
+            "time": total_training,
+            "bugs": df.index.get_level_values(0).unique().shape[0],
+            "files": df.index.get_level_values(1).unique().shape[0],
+        }
 
         return self.reg_model
 
-    def predict(self, clf: GATRegressor, df: pd.DataFrame, df_dependency: pd.DataFrame):
+    def predict(
+        self,
+        clf: GATRegressor,
+        df: pd.DataFrame,
+        df_dependency: pd.DataFrame,
+        fold_num=0,
+    ):
         """
         预测函数
 
@@ -751,6 +858,7 @@ class Adaptive_Process(object):
             clf: 训练好的回归模型（实际可能未使用）
             df (pd.DataFrame): 测试数据
             df_dependency (pd.DataFrame）: 依赖数据
+            fold_num: 当前折号
 
         决策逻辑：
             - 当回归模型得分高于权重方法得分时，使用回归预测
@@ -771,6 +879,23 @@ class Adaptive_Process(object):
             print("Using weights")
             result = np.dot(X, self.weights)
 
+        self.prediction_log[fold_num] = {}
+
+        for model_name, model in self.all_reg_models.items():
+            try:
+                model_result = model.predict(df, df_dependency)
+
+                # 计算当前模型在测试集上的MAP分数
+                r_temp = df[["used_in_fix"]].copy(deep=False)
+                r_temp["result"] = model_result
+                _, map_score, _, _ = calculate_metric_results(r_temp)
+
+                # 记录到日志
+                self.prediction_log[fold_num][model_name] = map_score
+            except Exception as e:
+                eprint(f"Error predicting with model {model_name}: {str(e)}")
+                self.prediction_log[fold_num][model_name] = None
+
         r = df[["used_in_fix"]].copy(deep=False)
         r["result"] = result
 
@@ -786,7 +911,7 @@ class Adaptive_Process(object):
         reg_model: GATRegressor,
     ):
         """
-        单配置评估内部方法
+        单配置评估内部方法，支持交叉验证
 
         参数：
             df (pd.DataFrame): 训练数据
@@ -805,21 +930,101 @@ class Adaptive_Process(object):
             tuple: (模型, 筛选方法名, 评分方法名, 平均MAP得分)
         """
         score = score_method(df, columns, weights)
-        score = score + df["used_in_fix"] * np.max(score)
-        reg_model.fit(df, dependency_df, score)
-        score = reg_model.predict(df, dependency_df)
+        fix_score = score + df["used_in_fix"] * np.max(score)
 
-        return (reg_model, score_method.__name__, evaluate_fold(df, score))
+        # 获取模型名称用于日志记录
+        model_name = str(reg_model)
+
+        cv_results = None
+
+        # 根据配置决定是否使用交叉验证
+        if self.use_training_cross_validation:
+            # 按bug ID进行划分，确保同一bug的文件在同一折
+            bug_ids = df.index.get_level_values(0).unique()
+            kf = KFold(
+                n_splits=self.cross_validation_fold_number,
+                shuffle=True,
+                random_state=42,
+            )
+
+            cv_scores = []
+
+            # 对每一折执行训练和验证
+            for train_idx, val_idx in kf.split(bug_ids):
+                # 获取训练和验证数据的bug IDs
+                train_bugs = bug_ids[train_idx]
+                val_bugs = bug_ids[val_idx]
+
+                # 基于bug ID筛选数据
+                train_mask = df.index.get_level_values(0).isin(train_bugs)
+                val_mask = df.index.get_level_values(0).isin(val_bugs)
+
+                # 准备训练和验证数据
+                train_df = df[train_mask]
+                val_df = df[val_mask]
+                train_dep_df = dependency_df[
+                    dependency_df.index.get_level_values(0).isin(train_bugs)
+                ]
+                val_dep_df = dependency_df[
+                    dependency_df.index.get_level_values(0).isin(val_bugs)
+                ]
+
+                # 准备训练得分
+                train_fix_score = fix_score[train_mask]
+
+                # 训练模型
+                fold_model = clone_regressor(reg_model)
+                fold_model.fit(train_df, train_dep_df, train_fix_score)
+
+                # 在验证集上评估
+                val_pred = fold_model.predict(val_df, val_dep_df)
+                val_result = val_df[["used_in_fix"]].copy(deep=False)
+                val_result["result"] = val_pred
+                _, val_map, _, _ = calculate_metric_results(val_result)
+
+                cv_scores.append(val_map)
+
+            # 计算平均交叉验证得分
+            cv_mean_score = np.mean(cv_scores)
+            eprint(
+                f"模型 {model_name} 的交叉验证得分: {cv_mean_score:.4f} (std: {np.std(cv_scores):.4f})"
+            )
+
+            cv_results = {model_name: [float(score) for score in cv_scores]}
+
+            # 在全部数据上重新训练模型，用于后续预测
+            reg_model.fit(df, dependency_df, fix_score)
+
+            # 返回使用交叉验证平均得分
+            return (reg_model, score_method.__name__, cv_mean_score, cv_results)
+        else:
+            # 原有逻辑：直接在整个训练集训练并评估
+            reg_model.fit(df, dependency_df, fix_score)
+            predict_score = reg_model.predict(df, dependency_df)
+            return (
+                reg_model,
+                score_method.__name__,
+                evaluate_fold(df, predict_score),
+                None,
+            )
 
     # ---------------------- 辅助函数 ----------------------
 
 
 def get_skmodels():
-    hidden_dim = [8, 16, 32]
-    heads = [[], [2], [4, 2], [4, 4, 2]]
+    hidden_dim = [16]
+    alpha_values = [0.0001]
+    heads = [
+        [],  # 无GAT层 (MLP基线)
+        [2],  # 单层简单GAT
+        [4],  # 单层较宽GAT
+    ]
     loss = ["MSE", "Huber"]
-    lr_values = [0.001, 0.01]
-    penalty = [None, "l2", "l1", "elasticnet"]
+    lr_list = [0.001, 0.005, 0.01]
+    penalty = ["elasticnet", "l2"]
+    dropout_rates = [0.3]
+    use_self_loops_modes = [False, True]
+
     return [
         GATRegressor(
             node_feature_columns.copy(),
@@ -827,11 +1032,23 @@ def get_skmodels():
             hidden_dim=hd,
             heads=h,
             shuffle=False,
+            use_self_loops_only=loop,
             loss=ls,
             lr=lr,
             penalty=p,
+            dropout=dr,
+            alpha=a,
         )
-        for hd, h, ls, lr, p in product(hidden_dim, heads, loss, lr_values, penalty)
+        for hd, h, ls, lr, p, dr, a, loop in product(
+            hidden_dim,
+            heads,
+            loss,
+            lr_list,
+            penalty,
+            dropout_rates,
+            alpha_values,
+            use_self_loops_modes,
+        )
     ]
 
 
@@ -841,9 +1058,10 @@ def _process(
     fold_dependency_training: pd.DataFrame,
     fold_testing: pd.DataFrame,
     fold_dependency_testing: pd.DataFrame,
+    fold_num: int = 0,
 ):
-    clf = ptemplate.train(fold_training, fold_dependency_training)
-    result = ptemplate.predict(clf, fold_testing, fold_dependency_testing)
+    clf = ptemplate.train(fold_training, fold_dependency_training, fold_num)
+    result = ptemplate.predict(clf, fold_testing, fold_dependency_testing, fold_num)
     return result
 
 
@@ -877,6 +1095,7 @@ def process(
             fold_dependency_training[i],
             fold_testing[i + 1],
             fold_dependency_testing[i + 1],
+            i,
         )
         if r is None:
             del ptemplate
@@ -888,67 +1107,80 @@ def process(
     all_results_df = pd.concat(results_list)
     all_results_df.reset_index(level=1, drop=True, inplace=True)
 
-    training_time_list = ptemplate.training_time_list.copy()
-
-    eprint(training_time_list)
-    time_sum, bug_reports_number_sum, file_number_sum = map(
-        sum, zip(*training_time_list)
-    )
-
-    eprint("time_sum", time_sum)
-    eprint("bug_reports_number_sum", bug_reports_number_sum)
-    eprint("file_number_sum", file_number_sum)
-
-    mean_time_bug_report_training = time_sum / bug_reports_number_sum
-    mean_time_file_training = time_sum / file_number_sum
-
-    eprint("mean_time_bug_report_training", mean_time_bug_report_training)
-    eprint("mean_time_file_training", mean_time_file_training)
-
     results_timestamp = time.strftime("%Y%m%d%H%M%S")
     result_dir = f"{file_prefix}_{results_timestamp}"
     os.makedirs(result_dir, exist_ok=True)
 
-    training_time = {
-        "time_sum": time_sum,
-        "bug_reports_number_sum": bug_reports_number_sum,
-        "file_number_sum": file_number_sum,
-        "mean_time_bug_report_training": mean_time_bug_report_training,
-        "mean_time_file_training": mean_time_file_training,
-    }
+    # 保存训练时间统计
     with open(
         os.path.join(result_dir, f"{ptemplate.name}_training_time.json"), "w"
     ) as time_file:
-        json.dump(training_time, time_file)
+        json.dump(ptemplate.training_time_stats, time_file, indent=4)
 
-    prescoring_log = ptemplate.prescoring_log.copy()
+    # 保存权重方法评估日志
     with open(
         os.path.join(result_dir, f"{ptemplate.name}_prescoring_log.json"), "w"
-    ) as prescoring_log_file:
-        json.dump(prescoring_log, prescoring_log_file)
+    ) as file:
+        json.dump(ptemplate.prescoring_log, file, indent=4)
 
-    regression_log = ptemplate.regression_log.copy()
+    # 保存回归模型评估日志
     with open(
         os.path.join(result_dir, f"{ptemplate.name}_regression_log.json"), "w"
-    ) as regression_log_file:
-        json.dump(regression_log, regression_log_file)
+    ) as file:
+        json.dump(ptemplate.regression_log, file, indent=4)
 
-    best_prescoring_log = ptemplate.best_prescoring_log.copy()
+    # 保存预测结果日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_prediction_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.prediction_log, file, indent=4)
+
+    # 保存最佳权重方法日志
     with open(
         os.path.join(result_dir, f"{ptemplate.name}_best_prescoring_log.json"), "w"
-    ) as best_prescoring_log_file:
-        json.dump(best_prescoring_log, best_prescoring_log_file)
+    ) as file:
+        json.dump(ptemplate.best_prescoring_log, file, indent=4)
 
-    best_regression_log = ptemplate.best_regression_log.copy()
+    # 保存最佳模型日志
     with open(
         os.path.join(result_dir, f"{ptemplate.name}_best_regression_log.json"), "w"
-    ) as best_regression_log_file:
-        json.dump(best_regression_log, best_regression_log_file)
+    ) as file:
+        json.dump(ptemplate.best_regression_log, file, indent=4)
+
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_cv_regression_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.cv_regression_log, file, indent=4)
 
     return {
         "name": ptemplate.name,
         "results": calculate_metric_results(all_results_df),
     }
+
+
+# 辅助函数：克隆回归器
+def clone_regressor(reg_model):
+    """创建回归器的深拷贝，保留所有参数但重置状态"""
+    return GATRegressor(
+        node_feature_columns=reg_model.node_feature_columns,
+        dependency_feature_columns=reg_model.dependency_feature_columns,
+        hidden_dim=reg_model.hidden_dim,
+        heads=reg_model.heads.copy() if hasattr(reg_model, "heads") else [],
+        dropout=reg_model.dropout,
+        alpha=reg_model.alpha,
+        loss=reg_model.loss,
+        penalty=reg_model.penalty,
+        l1_ratio=reg_model.l1_ratio,
+        max_iter=reg_model.max_iter,
+        tol=reg_model.tol,
+        shuffle=reg_model.shuffle,
+        epsilon=reg_model.epsilon,
+        random_state=reg_model.random_state,
+        lr=reg_model.lr,
+        warm_start=reg_model.warm_start,
+        n_iter_no_change=reg_model.n_iter_no_change,
+        use_self_loops_only=reg_model.use_self_loops_only,
+    )
 
 
 # region 特征权重计算

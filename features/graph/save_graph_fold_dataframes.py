@@ -14,7 +14,7 @@
    - 对应的文件依赖关系图
 
 使用方法:
-    python save_grapy_fold_dataframes.py <feature_files_prefix>
+    python save_graph_fold_dataframes.py <feature_files_prefix>
 
 参数:
     feature_files_prefix: 数据集前缀，用于定位和命名相关文件
@@ -38,13 +38,10 @@ import json
 import pickle
 import pandas as pd
 from unqlite import UnQLite
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 from typing import Dict, List
 
 from train_utils import load_data_folds, eprint
-
-
-NUM_THREADS = 12
 
 
 def create_file_dependency_dataframe(
@@ -162,7 +159,7 @@ def process_dependency_graph(file_prefix):
     bug_ids = list(bug_report_files_collection_db.keys())
 
     # 使用 Pool 并行处理每个 bug_id
-    with Pool(NUM_THREADS) as pool:
+    with Pool(cpu_count()) as pool:
         results = pool.starmap(
             create_file_dependency_dataframe,
             [
@@ -266,6 +263,7 @@ def filter_and_save_fold_data(
     # 合并并保存过滤后的fold数据
     if filtered_fold_data:
         filtered_fold_df = pd.concat(filtered_fold_data.values())
+        filtered_fold_df = filtered_fold_df.reset_index().set_index(["bid", "fid"])
         fold_file = f"../{file_prefix}/{file_prefix}_normalized_{fold_type}_fold_{fold_index}_graph"
         pd.to_pickle(filtered_fold_df, fold_file)
         print(

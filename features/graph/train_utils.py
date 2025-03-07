@@ -43,7 +43,7 @@ def load_fold_number(file_prefix: str):
     Returns:
         int: 数据集的折数
     """
-    with open(f"../{file_prefix}/{file_prefix}_fold_info.json, "r") as f:
+    with open(f"../{file_prefix}/{file_prefix}_fold_info.json", "r") as f:
         fold_info: Dict[str, int] = json.load(f)
         fold_number = fold_info["fold_number"]
         eprint("fold number", fold_number)

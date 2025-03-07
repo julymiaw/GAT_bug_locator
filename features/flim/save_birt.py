@@ -2,17 +2,17 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict
 import gc
-from tqdm import tqdm
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
+import time
 
-# project='jdt'
-# fold_number=12
+project = "jdt"
+fold_number = 12
 
 # project='eclipse_platform_ui'
 # fold_number=12
 
-project = "tomcat"
-fold_number = 2
+# project = "tomcat"
+# fold_number = 2
 
 # project = "aspectj"
 # fold_number = 1
@@ -28,193 +28,167 @@ fold_number = 2
 # fold_number=int(sys.argv[2])
 # print(project,fold_number)
 
-USE_TQDM = False
-NUM_THREADS = 28  # 使用的CPU核心数
+num_cpu = cpu_count()
+print(f"CPU核心数: {num_cpu}")
+
+start_time = time.time()
 
 
-def dynamic_chunksize(total_tasks, num_threads):
-    return max(total_tasks // (num_threads * 4), 1)
-
-
-def load_test_fold(k):
-    return pd.read_pickle(
-        "../" + project + "/" + project + "_normalized_testing_fold_" + str(k)
-    )
+def load_test_fold_mmap(k):
+    filename = f"../{project}/{project}_normalized_testing_fold_{k}"
+    return pd.read_pickle(filename, compression=None)
 
 
 print("正在加载测试集分片...")
-total_tasks = fold_number + 1
-chunksize = dynamic_chunksize(total_tasks, NUM_THREADS)
-with Pool(NUM_THREADS) as p:
-    test_fold_03 = list(
-        tqdm(
-            p.imap(load_test_fold, range(total_tasks), chunksize=chunksize),
-            total=total_tasks,
-            desc="加载测试集分片",
-            disable=not USE_TQDM,
-        )
-    )
+with Pool(num_cpu) as p:
+    test_fold_03 = p.map(load_test_fold_mmap, range(fold_number + 1))
 
 test_fold_all = pd.concat(test_fold_03)
 del test_fold_03
 gc.collect()
 
+print(f"测试集加载完成，耗时: {time.time() - start_time:.2f}秒")
+phase_time = time.time()
+
+print("建立报告-代码映射关系...")
 report_idx = test_fold_all.index.get_level_values(0).unique()
-code_idx = test_fold_all.index.get_level_values(1).unique()
-
-reportId2codeId = dict()
-print("\n建立报告-代码映射关系...")
 
 
-def process_report(report):
-    test_set = test_fold_all.loc[report].index.get_level_values(0).unique()
-    report_code_map = {}
-    for codeId in test_set:
-        report_code_map[report + "_" + codeId] = codeId
-    return report_code_map
+# 优化1: 将报告按批次分组处理，减少进程间通信开销
+def process_report_batch(report_batch):
+    results = {}
+    for report in report_batch:
+        test_set = test_fold_all.loc[report].index.get_level_values(0).unique()
+        for codeId in test_set:
+            results[(report, codeId)] = codeId
+    return results
 
 
-total_tasks = len(report_idx)
-chunksize = dynamic_chunksize(total_tasks, NUM_THREADS)
-if USE_TQDM:
-    with Pool(NUM_THREADS) as p:
-        results = list(
-            tqdm(
-                p.imap(process_report, report_idx, chunksize=chunksize),
-                total=total_tasks,
-                desc="处理报告",
-            )
-        )
+# 创建更大批次的任务
+batch_size = max(1, len(report_idx) // (num_cpu * 4))  # 每个CPU处理多个批次
+report_batches = [
+    report_idx[i : i + batch_size] for i in range(0, len(report_idx), batch_size)
+]
+print(f"将{len(report_idx)}个报告分成{len(report_batches)}批处理")
+
+# 优化2: 减少进程数或直接串行处理(如果数据量不大)
+if len(report_batches) > num_cpu * 2:  # 足够多的批次才值得并行
+    with Pool(num_cpu) as p:
+        batch_results = p.map(process_report_batch, report_batches)
+
+    reportId2codeId = {}
+    for result in batch_results:
+        reportId2codeId.update(result)
 else:
-    with Pool(NUM_THREADS) as p:
-        results = p.map(process_report, report_idx, chunksize=chunksize)
+    # 串行处理，避免进程通信开销
+    reportId2codeId = {}
+    for batch in report_batches:
+        results = process_report_batch(batch)
+        reportId2codeId.update(results)
 
-for result in results:
-    reportId2codeId.update(result)
+print(f"报告-代码映射关系建立完成，耗时: {time.time() - phase_time:.2f}秒")
+phase_time = time.time()
 
-nl_vecs = np.load("../joblib_memmap_" + project + "_flim/nl_vecs.npy")
-code_vecs = np.load("../joblib_memmap_" + project + "_flim/code_vecs.npy")
-code_urls = np.load("../joblib_memmap_" + project + "_flim/code_urls.npy")
-nl_urls = np.load("../joblib_memmap_" + project + "_flim/nl_urls.npy")
+print("加载向量数据...")
+nl_vecs = np.load(f"../joblib_memmap_{project}_flim/nl_vecs.npy")
+nl_urls = np.load(f"../joblib_memmap_{project}_flim/nl_urls.npy")
+code_vecs = np.load(f"../joblib_memmap_{project}_flim/code_vecs.npy")
+code_urls = np.load(f"../joblib_memmap_{project}_flim/code_urls.npy")
 
-reportId2nlvec = dict()
-for reportId, nl_vec in zip(nl_urls, nl_vecs):
-    reportId2nlvec[reportId] = nl_vec
+reportId2nlvec = {reportId: nl_vec for reportId, nl_vec in zip(nl_urls, nl_vecs)}
 codeId2codevec = defaultdict(list)
 for codeId, code_vec in zip(code_urls, code_vecs):
     codeId2codevec[codeId].append(code_vec)
 
-print("\n计算特征分数...")
+for codeId in codeId2codevec:
+    codeId2codevec[codeId] = np.array(codeId2codevec[codeId])
+
+print(f"向量数据加载完成，耗时: {time.time() - phase_time:.2f}秒")
+phase_time = time.time()
+
+print("计算特征分数...")
 
 
-def compute_scores(item):
-    reportId, codeId = item
-    reportId = reportId.split("_")[0]
-    nl_vec = reportId2nlvec[reportId]
-    code_vec = codeId2codevec[codeId]
-    code_vec = np.array(code_vec)
-    scores = np.matmul(nl_vec, code_vec.T)
-    return list(scores)
+# 优化3: 对特征分数计算同样应用批处理策略
+def compute_scores_batch(items_batch):
+    results = []
+    for (reportId, codeId), _ in items_batch:
+        nl_vec = reportId2nlvec[reportId]
+        code_vec = codeId2codevec[codeId]
+        scores = np.matmul(nl_vec, code_vec.T)
+        max_score = np.max(scores)
+        mean_score = np.mean(scores)
+        results.append((reportId, codeId, max_score, mean_score))
+    return results
 
 
-total_tasks = len(reportId2codeId)
-chunksize = dynamic_chunksize(total_tasks, NUM_THREADS)
-if USE_TQDM:
-    with Pool(NUM_THREADS) as p:
-        report2codeScores = list(
-            tqdm(
-                p.imap(compute_scores, reportId2codeId.items(), chunksize=chunksize),
-                total=total_tasks,
-                desc="计算相似度分数",
-            )
-        )
-else:
-    with Pool(NUM_THREADS) as p:
-        report2codeScores = p.map(
-            compute_scores, reportId2codeId.items(), chunksize=chunksize
-        )
+items = list(reportId2codeId.items())
+batch_size = max(1, len(items) // (num_cpu * 4))
+item_batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+print(f"将{len(items)}个特征分数计算任务分成{len(item_batches)}批处理")
 
-bid_list = []
-codeId_list = []
-for key, val in reportId2codeId.items():
-    try:
-        bid_list.append(key.split("_")[0])
-        codeId_list.append(val)
-    except:
-        print(key, val)
+with Pool(num_cpu) as p:
+    batch_results = p.map(compute_scores_batch, item_batches)
 
-print("\n生成特征矩阵...")
+report2codeScores = []
+for batch in batch_results:
+    report2codeScores.extend(batch)
 
+print(f"特征分数计算完成，耗时: {time.time() - phase_time:.2f}秒")
+phase_time = time.time()
 
-def fill_features(i_val):
-    i, val = i_val
-    feature = [0] * 19
-    for j, fea in enumerate(val):
-        feature[j] = fea
-    feature[-2] = max(val)
-    feature[-1] = np.mean(val)
-    return feature
+print("生成特征矩阵...")
+bid_list, fid_list, max_values, mean_values = zip(*report2codeScores)
 
+df = pd.DataFrame(
+    0, index=range(len(max_values)), columns=[f"f{i}" for i in range(20, 39)]
+)
+df["f37"] = max_values
+df["f38"] = mean_values
 
-total_tasks = len(report2codeScores)
-chunksize = dynamic_chunksize(total_tasks, NUM_THREADS)
-if USE_TQDM:
-    with Pool(NUM_THREADS) as p:
-        features = list(
-            tqdm(
-                p.imap(
-                    fill_features, enumerate(report2codeScores), chunksize=chunksize
-                ),
-                total=total_tasks,
-                desc="填充特征",
-            )
-        )
-else:
-    with Pool(NUM_THREADS) as p:
-        features = p.map(
-            fill_features, enumerate(report2codeScores), chunksize=chunksize
-        )
+min_vals = df.min()
+max_vals = df.max()
+df = (df - min_vals) / (max_vals - min_vals)
 
-df = pd.DataFrame(features, columns=["f" + str(i) for i in range(20, 39)])
-min_df = pd.DataFrame(df.min()).transpose()
-max_df = pd.DataFrame(df.max()).transpose()
-df = (df - min_df.min()) / (max_df.max() - min_df.min())
-del features
-del code_vecs
-del nl_vecs
-gc.collect()
 df["bid"] = bid_list
-df["fid"] = codeId_list
-test_fold_all.index.names = ["bid", "fid"]
-test_fold_all.head()
+df["fid"] = fid_list
 df.set_index(["bid", "fid"], inplace=True)
 
-print("\n合并训练集数据...")
-for k in tqdm(range(fold_number + 1), desc="训练集分片处理", disable=not USE_TQDM):
-    training_fold_k = pd.read_pickle(
-        "../" + project + "/" + project + "_normalized_training_fold_" + str(k)
-    )
-    training_fold_k.index.names = ["bid", "fid"]
-    all_dataframe = training_fold_k.join(df, how="inner")
-    all_dataframe.to_pickle(
-        "../"
-        + project
-        + "/"
-        + project
-        + "_normalized_training_fold_"
-        + str(k)
-        + "_flim"
-    )
+test_fold_all.index.names = ["bid", "fid"]
 
-print("\n合并测试集数据...")
-for k in tqdm(range(fold_number + 1), desc="测试集分片处理", disable=not USE_TQDM):
-    training_fold_k = pd.read_pickle(
-        "../" + project + "/" + project + "_normalized_testing_fold_" + str(k)
-    )
-    training_fold_k.index.names = ["bid", "fid"]
-    all_dataframe = training_fold_k.join(df, how="inner")
-    all_dataframe.to_pickle(
-        "../" + project + "/" + project + "_normalized_testing_fold_" + str(k) + "_flim"
-    )
+print(f"特征矩阵生成完成，耗时: {time.time() - phase_time:.2f}秒")
+phase_time = time.time()
 
-print("\n完成！")
+
+# 优化4: 调整并行处理fold的策略
+def process_fold(k, is_training=True):
+    fold_type = "training" if is_training else "testing"
+    input_path = f"../{project}/{project}_normalized_{fold_type}_fold_{k}"
+    output_path = f"../{project}/{project}_normalized_{fold_type}_fold_{k}_flim"
+
+    fold_data = pd.read_pickle(input_path)
+    fold_data.index.names = ["bid", "fid"]
+    all_dataframe = fold_data.join(df, how="inner")
+    all_dataframe.to_pickle(output_path)
+    return k
+
+
+print("并行合并训练集和测试集数据...")
+training_args = [(k, True) for k in range(fold_number + 1)]
+testing_args = [(k, False) for k in range(fold_number + 1)]
+all_args = training_args + testing_args
+
+worker_count = min(num_cpu, len(all_args))
+print(f"使用{worker_count}个工作进程处理{len(all_args)}个数据合并任务")
+
+with Pool(worker_count) as p:
+    p.starmap(process_fold, all_args)
+
+print(f"数据合并完成，耗时: {time.time() - phase_time:.2f}秒")
+
+# 清理内存
+del nl_vecs, code_vecs, nl_urls, code_urls, reportId2nlvec, codeId2codevec
+gc.collect()
+
+print(f"总耗时: {time.time() - start_time:.2f}秒")
+print("完成！")

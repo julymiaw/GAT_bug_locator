@@ -109,7 +109,7 @@ class Adaptive_Process(object):
         self.use_reg_model_always = True  # 是否强制使用回归模型
         self.use_prescoring_cross_validation = True  # 权重计算阶段交叉验证开关
         self.use_training_cross_validation = True  # 模型选择阶段交叉验证开关
-        self.cross_validation_fold_number = 5  # 交叉验证折数
+        self.cross_validation_fold_number = 2  # 交叉验证折数
         # endregion
 
         # region 性能日志
@@ -286,7 +286,7 @@ class Adaptive_Process(object):
         )
 
         eprint(
-            res_max, self.reg_model_name, self.cut_method_name, self.score_method_name
+            f"Best regression model: {self.reg_model_name} MAP: {res_max} Cut: {self.cut_method_name}"
         )
         eprint("===============")
 

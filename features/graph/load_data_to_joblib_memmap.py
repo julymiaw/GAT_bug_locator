@@ -33,20 +33,14 @@ def main():
         fold_training,
     ) = load_graph_data_folds(file_prefix)
 
-    eprint("===")
-    eprint("fold_testing", fold_testing[0].info(memory_usage="deep"))
-    eprint("===")
-    eprint("fold_training", fold_training[0].info(memory_usage="deep"))
-    eprint("===")
-    eprint(
-        "fold_dependency_testing", fold_dependency_testing[0].info(memory_usage="deep")
-    )
-    eprint("===")
-    eprint(
-        "fold_dependency_training",
-        fold_dependency_training[0].info(memory_usage="deep"),
-    )
-
+    print("===fold_testing===")
+    fold_testing[0].info(memory_usage="deep")
+    print("===fold_training===")
+    fold_training[0].info(memory_usage="deep")
+    print("===fold_dependency_testing===")
+    fold_dependency_testing[0].info(memory_usage="deep")
+    print("===fold_dependency_training===")
+    fold_dependency_training[0].info(memory_usage="deep")
     try:
         os.mkdir(folder)
     except FileExistsError:
