@@ -14,3 +14,5 @@ features/tomcat
 features/jdt
 *.exe
 joblib_memmap_*
+analysis_results
+*.json
