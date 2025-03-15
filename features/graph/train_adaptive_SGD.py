@@ -7,6 +7,7 @@ Requires results of save_normalized_fold_dataframes.py
 """
 
 import json
+import os
 import time
 import argparse
 from collections import defaultdict
@@ -17,19 +18,15 @@ import gc
 from typing import Callable, Dict, List, Tuple
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 from joblib import Parallel, delayed
-from scipy.stats import kruskal, ttest_ind, levene
-from sklearn.decomposition import *
-from sklearn.ensemble import *
-from sklearn.feature_selection import *
 from sklearn.linear_model import SGDRegressor
 from sklearn.model_selection import KFold
-from sklearn.utils import safe_mask
 from skopt import load
 
 from metrics import calculate_metric_results, print_metrics
 from train_utils import eprint
+
+from weight_functions import get_weights_methods
 
 node_feature_columns = ["f" + str(i) for i in range(1, 20)]
 
@@ -54,21 +51,7 @@ class Adaptive_Process(object):
         """初始化方法，配置所有可用算法组件"""
         # region 算法组件配置
         # 特征权重计算方法列表（统计检验/树模型/降维方法等）
-        self.weights_methods = [
-            weights_AdaBoostClassifier,
-            weights_ExtraTreesClassifier,
-            weights_GradientBoostingClassifier,
-            weights_const,
-            weights_variance,
-            weights_chi2,
-            weights_mutual_info_classif,
-            weights_FastICA,
-            weights_kruskal_classif,
-            weights_ttest_ind_classif,
-            weights_levene_median,
-            weights_mean_var,
-            weights_maximum_absolute_deviation,
-        ]
+        self.weights_methods = get_weights_methods()
 
         # 回归模型集合（包含多种SGDRegressor配置）
         self.reg_models: List[SGDRegressor] = []
@@ -109,7 +92,7 @@ class Adaptive_Process(object):
         self.use_reg_model_always = True  # 是否强制使用回归模型
         self.use_prescoring_cross_validation = True  # 权重计算阶段交叉验证开关
         self.use_training_cross_validation = True  # 模型选择阶段交叉验证开关
-        self.cross_validation_fold_number = 2  # 交叉验证折数
+        self.cross_validation_fold_number = 5  # 交叉验证折数
         # endregion
 
         # region 性能日志
@@ -161,15 +144,12 @@ class Adaptive_Process(object):
                 kdf = df.iloc[train_index]
                 weights: List[Tuple[str, np.ndarray]] = Parallel(n_jobs=-1)(
                     delayed(weights_on_df)(m, kdf, columns)
-                    for m in tqdm(self.weights_methods, desc="Calculating weights")
+                    for m in self.weights_methods
                 )
                 kdf_test = df.iloc[test_index]
                 weights_results: List[Tuple[str, Tuple[np.ndarray, float]]] = Parallel(
                     n_jobs=-1
-                )(
-                    delayed(eval_weights)(m, w, kdf_test, columns)
-                    for m, w in tqdm(weights, desc="Evaluating weights")
-                )
+                )(delayed(eval_weights)(m, w, kdf_test, columns) for m, w in weights)
                 weights_results_dict: Dict[str, Tuple[np.ndarray, float]] = dict(
                     weights_results
                 )
@@ -189,8 +169,7 @@ class Adaptive_Process(object):
             self.weights = results
         else:
             results: List[Tuple[str, Tuple[np.ndarray, float]]] = Parallel(n_jobs=-1)(
-                delayed(fold_check)(m, df, columns)
-                for m in tqdm(self.weights_methods, desc="Fold check")
+                delayed(fold_check)(m, df, columns) for m in self.weights_methods
             )
             self.weights = dict(results)
 
@@ -250,9 +229,8 @@ class Adaptive_Process(object):
                 reg_model,
                 cut_method,
             )
-            for score_method, reg_model, cut_method in tqdm(
-                product(self.score_methods, self.reg_models, self.cut_methods),
-                desc="Training models",
+            for score_method, reg_model, cut_method in product(
+                self.score_methods, self.reg_models, self.cut_methods
             )
         )
 
@@ -279,14 +257,13 @@ class Adaptive_Process(object):
         self.score_method = self.score_methods_map[self.score_method_name]
 
         self.reg_model_score = res_max
-        current_reg_model = self.reg_model
-        name = self.prepare_regressor_name(current_reg_model)
+        name = self.prepare_regressor_name(self.reg_model)
         self.best_regression_log.append(
             (name, self.cut_method_name, self.score_method_name, self.reg_model_score)
         )
 
         eprint(
-            f"Best regression model: {self.reg_model_name} MAP: {res_max} Cut: {self.cut_method_name}"
+            f"Best regression model: {name} MAP: {res_max} Cut: {self.cut_method_name}"
         )
         eprint("===============")
 
@@ -361,7 +338,9 @@ class Adaptive_Process(object):
             X_df = pd.DataFrame(X, columns=columns)
             result = clf.predict(X_df)
         else:
-            print("Using weights")
+            eprint(
+                "Regression model score is lower than weights method score, using weights method for prediction."
+            )
             result = np.dot(X, self.weights)
 
         r = df[["used_in_fix"]].copy(deep=False)
@@ -560,28 +539,22 @@ def process(
     all_results_df = pd.concat(results_list)
     all_results_df.reset_index(level=1, drop=True, inplace=True)
 
+    results_timestamp = time.strftime("%Y%m%d%H%M%S")
+    result_dir = f"{file_prefix}_SGD_{results_timestamp}"
+    os.makedirs(result_dir, exist_ok=True)
+
     training_time_list = ptemplate.training_time_list.copy()
     prescoring_log = ptemplate.prescoring_log.copy()
     regression_log = ptemplate.regression_log.copy()
     best_prescoring_log = ptemplate.best_prescoring_log.copy()
     best_regression_log = ptemplate.best_regression_log.copy()
 
-    eprint(training_time_list)
     time_sum, bug_reports_number_sum, file_number_sum = map(
         sum, zip(*training_time_list)
     )
 
-    eprint("time_sum", time_sum)
-    eprint("bug_reports_number_sum", bug_reports_number_sum)
-    eprint("file_number_sum", file_number_sum)
-
     mean_time_bug_report_training = time_sum / bug_reports_number_sum
     mean_time_file_training = time_sum / file_number_sum
-
-    eprint("mean_time_bug_report_training", mean_time_bug_report_training)
-    eprint("mean_time_file_training", mean_time_file_training)
-
-    results_timestamp = time.strftime("%Y%m%d%H%M%S")
 
     training_time = {
         "time_sum": time_sum,
@@ -591,252 +564,40 @@ def process(
         "mean_time_file_training": mean_time_file_training,
     }
     with open(
-        f"{file_prefix}_{ptemplate.name}_training_time_{results_timestamp}.json", "w"
+        os.path.join(result_dir, f"{ptemplate.name}_training_time.json"), "w"
     ) as time_file:
-        json.dump(training_time, time_file)
+        json.dump(training_time, time_file, indent=4)
 
     prescoring_log = ptemplate.prescoring_log.copy()
     with open(
-        f"{file_prefix}_{ptemplate.name}_prescoring_log_{results_timestamp}.json", "w"
+        os.path.join(result_dir, f"{ptemplate.name}_prescoring_log.json"), "w"
     ) as prescoring_log_file:
-        json.dump(prescoring_log, prescoring_log_file)
+        json.dump(prescoring_log, prescoring_log_file, indent=4)
 
     regression_log = ptemplate.regression_log.copy()
     with open(
-        f"{file_prefix}_{ptemplate.name}_regression_log_{results_timestamp}.json", "w"
+        os.path.join(result_dir, f"{ptemplate.name}_regression_log.json"), "w"
     ) as regression_log_file:
-        json.dump(regression_log, regression_log_file)
+        json.dump(regression_log, regression_log_file, indent=4)
 
     best_prescoring_log = ptemplate.best_prescoring_log.copy()
     with open(
-        f"{file_prefix}_{ptemplate.name}_best_prescoring_log_{results_timestamp}.json",
+        os.path.join(result_dir, f"{ptemplate.name}_best_prescoring_log.json"),
         "w",
     ) as best_prescoring_log_file:
-        json.dump(best_prescoring_log, best_prescoring_log_file)
+        json.dump(best_prescoring_log, best_prescoring_log_file, indent=4)
 
     best_regression_log = ptemplate.best_regression_log.copy()
     with open(
-        f"{file_prefix}_{ptemplate.name}_best_regression_log_{results_timestamp}.json",
+        os.path.join(result_dir, f"{ptemplate.name}_best_regression_log.json"),
         "w",
     ) as best_regression_log_file:
-        json.dump(best_regression_log, best_regression_log_file)
+        json.dump(best_regression_log, best_regression_log_file, indent=4)
 
     return {
         "name": ptemplate.name,
         "results": calculate_metric_results(all_results_df),
     }
-
-
-# region 特征权重计算
-def _weights_normalize(weights: np.ndarray):
-    """
-    权重归一化函数
-
-    参数：
-        weights: 原始权重向量
-
-    返回：
-        weights: L1归一化后的权重向量（总和为1）
-
-    说明：
-        - 当权重总和>0时执行归一化
-        - 处理全零权重时保持原值
-    """
-    weights_sum = weights.sum()
-    if weights_sum > 0:
-        weights /= weights_sum
-
-    return weights
-
-
-def weights_chi2(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    基于卡方检验的特征权重计算
-
-    参数：
-        df (pd.DataFrame): 包含特征和标签的数据
-        columns (list): 特征列名列表
-
-    返回：
-        np.ndarray: 归一化的卡方统计量作为特征权重
-
-    实现：
-        使用sklearn.feature_selection.chi2计算各特征与目标变量的卡方统计量
-    """
-    weights = chi2(df[columns], df["used_in_fix"])
-    weights = weights[0]
-
-    return _weights_normalize(weights)
-
-
-def weights_mutual_info_classif(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """基于互信息的特征权重计算，适用于连续特征"""
-    weights = mutual_info_classif(
-        df[columns], df["used_in_fix"], discrete_features=False
-    )
-    weights = weights
-
-    return _weights_normalize(weights)
-
-
-def weights_FastICA(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """使用独立成分分析(ICA)的首个成分作为特征权重"""
-    m = FastICA(n_components=1)
-    m.fit(df[columns])
-    weights = m.components_[0]
-
-    return _weights_normalize(weights)
-
-
-def weights_variance(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """基于特征方差的权重计算，负方差置零处理"""
-    fs = VarianceThreshold()
-    fs.fit(df[columns])
-    weights = fs.variances_
-    weights[weights < 0] = 0
-
-    return _weights_normalize(weights)
-
-
-def weights_const(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """恒定权重（0.5），用作基准方法"""
-    return np.ones(df[columns].shape[1]) * 0.5
-
-
-def weights_ExtraTreesClassifier(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """基于极端随机树分类器的特征重要性"""
-    tree = ExtraTreesClassifier(n_estimators=100)
-    tree.fit(df[columns], df["used_in_fix"])
-    weights = tree.feature_importances_
-
-    return _weights_normalize(weights)
-
-
-def weights_GradientBoostingClassifier(
-    df: pd.DataFrame, columns: List[str]
-) -> np.ndarray:
-    """梯度提升回归树特征重要性"""
-    tree = GradientBoostingRegressor(n_estimators=100)
-    tree.fit(df[columns], df["used_in_fix"])
-    weights = tree.feature_importances_
-
-    return _weights_normalize(weights)
-
-
-def weights_AdaBoostClassifier(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """AdaBoost分类器特征重要性"""
-    tree = AdaBoostClassifier(n_estimators=100)
-    tree.fit(df[columns], df["used_in_fix"])
-    weights = tree.feature_importances_
-
-    return _weights_normalize(weights)
-
-
-def weights_kruskal_classif(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    Kruskal-Wallis检验统计量作为权重
-    适用于非正态分布的组间差异检验
-    """
-    weights = kruskal_classif(df[columns], df["used_in_fix"])
-    weights = weights[0]
-
-    return _weights_normalize(weights)
-
-
-def kruskal_classif(X, y):
-    """
-    执行Kruskal-Wallis H检验
-    返回各特征的检验统计量绝对值和p值
-    """
-    ret_k = []
-    ret_p = []
-
-    for column in X:
-        args = [X[safe_mask(X, y == k)][column] for k in np.unique(y)]
-        r = kruskal(*args)
-        ret_k.append(abs(r[0]))
-        ret_p.append(r[1])
-    return np.asanyarray(ret_k), np.asanyarray(ret_p)
-
-
-def weights_ttest_ind_classif(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    独立样本t检验统计量作为权重
-    假设方差不相等（Welch's t-test）
-    """
-    weights = ttest_ind_classif(df[columns], df["used_in_fix"])
-    weights = weights[0]
-
-    return _weights_normalize(weights)
-
-
-def ttest_ind_classif(X, y):
-    """执行Welch's t-test，返回绝对t值和p值"""
-    ret_k = []
-    ret_p = []
-
-    for column in X:
-        args = [X[safe_mask(X, y == k)][column] for k in np.unique(y)]
-        r = ttest_ind(*args, equal_var=False)
-        ret_k.append(abs(r[0]))
-        ret_p.append(r[1])
-    return np.asanyarray(ret_k), np.asanyarray(ret_p)
-
-
-def weights_levene_median(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    基于中位数Levene检验的权重计算
-    用于检测组间方差差异
-    """
-    weights = levene_median(df[columns], df["used_in_fix"])
-    weights = weights[0]
-
-    return _weights_normalize(weights)
-
-
-def levene_median(X, y):
-    """执行基于中位数的Levene方差齐性检验"""
-    ret_k = []
-    ret_p = []
-
-    for column in X:
-        args = [X[safe_mask(X, y == k)][column] for k in np.unique(y)]
-        r = levene(args[0], args[1], center="median")
-        ret_k.append(abs(r[0]))
-        ret_p.append(r[1])
-    return np.asanyarray(ret_k), np.asanyarray(ret_p)
-
-
-def weights_mean_var(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    均值-方差比率权重：
-    (修复样本的变异系数) / (非修复样本的变异系数)
-    变异系数 = 标准差 / 均值
-    """
-    weights_var = np.var(df[df["used_in_fix"] == 1][columns], axis=0)
-    weights_mean = np.mean(df[df["used_in_fix"] == 1][columns], axis=0)
-    weights_var1 = np.var(df[df["used_in_fix"] == 0][columns], axis=0)
-    weights_var1_mean = np.mean(df[df["used_in_fix"] == 0][columns], axis=0)
-
-    return (weights_var / weights_mean) / (weights_var1 / weights_var1_mean)
-
-
-def weights_maximum_absolute_deviation(
-    df: pd.DataFrame, columns: List[str]
-) -> np.ndarray:
-    """
-    最大绝对偏差权重：
-    计算修复样本各特征值与其最大值的平均绝对偏差
-    """
-    weights_max = np.max(df[df["used_in_fix"] == 1][columns], axis=0)
-    weights_mad = np.mean(
-        np.abs(df[df["used_in_fix"] == 1][columns] - weights_max), axis=0
-    )
-
-    return weights_mad
-
-
-# endregion
 
 
 def weights_on_df(
@@ -1116,21 +877,19 @@ def size_selectf_only_fixes_p_perc_30(df: pd.DataFrame, score: np.ndarray) -> pd
 
 
 def main():
-    # parser = argparse.ArgumentParser(description="Train Adaptive Process")
-    # parser.add_argument("file_prefix", type=str, help="Feature files prefix")
-    # parser.add_argument("--max", action="store_true", help="Include feature 37")
-    # parser.add_argument("--mean", action="store_true", help="Include feature 38")
-    # args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="Train Adaptive Process")
+    parser.add_argument("file_prefix", type=str, help="Feature files prefix")
+    parser.add_argument("--max", action="store_true", help="Include feature 37")
+    parser.add_argument("--mean", action="store_true", help="Include feature 38")
+    args = parser.parse_args()
 
-    # # 根据参数决定是否添加特征37和38
-    # if args.max:
-    #     node_feature_columns.append("f37")
-    # if args.mean:
-    #     node_feature_columns.append("f38")
+    # 根据参数决定是否添加特征37和38
+    if args.max:
+        node_feature_columns.append("f37")
+    if args.mean:
+        node_feature_columns.append("f38")
 
-    # file_prefix = args.file_prefix
-
-    file_prefix = "aspectj"
+    file_prefix = args.file_prefix
 
     (
         fold_number,
@@ -1154,7 +913,7 @@ def main():
         )
 
     results = [r for r in results if r is not None]
-    eprint("Results")
+    print("===============Results===============")
     for result in results:
         print("name ", result["name"])
         print_metrics(*result["results"])

@@ -19,12 +19,7 @@ from typing import Callable, Dict, List, Tuple
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
-from scipy.stats import kruskal, ttest_ind, levene
-from sklearn.decomposition import *
-from sklearn.ensemble import *
-from sklearn.feature_selection import *
 from sklearn.model_selection import KFold
-from sklearn.utils import safe_mask
 from skopt import load
 
 import torch
@@ -37,6 +32,8 @@ from torch_geometric.data import Data
 from metrics import calculate_metric_results, print_metrics
 from train_utils import eprint
 
+from weight_functions import get_weights_methods
+
 node_feature_columns = ["f" + str(i) for i in range(1, 20)]
 edge_feature_columns = ["t" + str(i) for i in range(1, 13)]
 
@@ -45,150 +42,126 @@ class GATModule(nn.Module):
 
     def __init__(self, node_dim, edge_dim, hidden_dim, heads, dropout):
         """
-        增强版GAT模型，具有更深的网络结构和多头注意力机制
+        GAT模型
 
         参数:
             node_dim: 节点特征维度
             edge_dim: 边特征维度
             hidden_dim: 隐藏层维度
-            heads: 各层的注意力头数列表，若为空则不使用GAT层
+            heads: 注意力头数，若为None则不使用GAT层
             dropout: Dropout率
         """
         super(GATModule, self).__init__()
 
         # 节点特征变换
         self.node_lin = nn.Linear(node_dim, hidden_dim)
-        self.use_gat = len(heads) > 0
+        self.use_gat = heads is not None
 
-        # MLP流 - 仅处理节点特征
-        self.mlp_stream = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 2),
-            nn.PReLU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(hidden_dim * 2),
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.PReLU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(hidden_dim),
-        )
+        self.use_global_node = True
 
         # 边特征变换为权重
         if self.use_gat:
-            self.edge_lin = nn.Linear(edge_dim, hidden_dim // 4)
-            self.edge_proj = nn.Linear(hidden_dim // 4, 1)
+            # 边特征变换为权重
+            self.edge_lin = nn.Linear(edge_dim, 1)
 
-            # 多层GAT结构
-            self.gat_layers = nn.ModuleList()
-
-            # 第一层GAT
-            self.gat_layers.append(
-                GATConv(
-                    hidden_dim,
-                    hidden_dim,
-                    heads=heads[0],
-                    dropout=dropout,
-                    add_self_loops=True,
-                )
-            )
-
-            # 中间层GAT
-            for i in range(1, len(heads)):
-                self.gat_layers.append(
+            # 多层GAT - 适应2跳距离的修复文件
+            self.gat_layers = nn.ModuleList(
+                [
                     GATConv(
-                        hidden_dim * heads[i - 1],
                         hidden_dim,
-                        heads=heads[i],
+                        hidden_dim,
+                        heads=heads,
                         dropout=dropout,
                         add_self_loops=True,
-                    )
-                )
+                        fill_value=1.0,
+                    ),
+                    GATConv(
+                        hidden_dim * heads,
+                        hidden_dim,
+                        heads=heads,
+                        dropout=dropout,
+                        add_self_loops=True,
+                        fill_value=1.0,
+                    ),
+                ]
+            )
+
+            self.dropout = nn.Dropout(dropout)
+
+            # 残差连接层
+            self.residual_proj = nn.Linear(hidden_dim, hidden_dim * heads)
 
             # GAT流的输出层
-            self.gat_out = nn.Linear(hidden_dim * heads[-1], hidden_dim)
-
-            # 边密度感知器 - 决定两个流的权重
-            self.density_encoder = nn.Sequential(
-                nn.Linear(2, 16),  # 输入：[节点数, 边/节点比]
-                nn.ReLU(),
-                nn.Linear(16, 1),
-                nn.Sigmoid(),
-            )
+            self.gat_out = nn.Linear(hidden_dim * heads, hidden_dim)
         else:
-            # 无GAT时使用额外的MLP层增强表达能力
-            self.enhanced_mlp = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.PReLU(),
+            # MLP流 - 仅处理节点特征
+            self.mlp_stream = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim * 2),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.LayerNorm(hidden_dim * 2),
+                nn.Linear(hidden_dim * 2, hidden_dim),
+                nn.ReLU(),
                 nn.Dropout(dropout),
                 nn.LayerNorm(hidden_dim),
             )
 
-        # 共用组件
-        self.dropout = nn.Dropout(dropout)
-        self.activation = nn.PReLU()
-        self.layer_norm = nn.LayerNorm(hidden_dim)
+        # 全局信息聚合机制
+        if self.use_global_node:
+            self.global_attn = nn.Linear(hidden_dim, 1)
+            self.global_proj = nn.Linear(hidden_dim, hidden_dim)
 
         # 预测层
-        self.out_lin1 = nn.Linear(hidden_dim, hidden_dim)
-        self.out_lin2 = nn.Linear(hidden_dim, 1)
+        self.out_lin = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1),
+        )
 
     def forward(self, x, edge_index, edge_attr):
         # 节点特征变换
         x = self.node_lin(x)
-        h_shared = F.relu(x)
-
-        # MLP流处理
-        mlp_out = self.mlp_stream(h_shared)
+        h = F.relu(x)
 
         if self.use_gat:
-            # 计算图密度特征
-            num_nodes = x.shape[0]
-            num_edges = edge_index.shape[1]
-            edge_density = num_edges / num_nodes
-            density_feat = torch.tensor(
-                [[float(num_nodes), float(edge_density)]],
-                device=x.device,
-                dtype=torch.float,
-            )
-
             # 边特征处理
-            edge_emb = self.edge_lin(edge_attr)
-            edge_emb = self.activation(edge_emb)
-            edge_weights = torch.sigmoid(self.edge_proj(edge_emb)).squeeze(-1)
+            edge_weights = torch.sigmoid(self.edge_lin(edge_attr)).squeeze(-1) * 2
 
-            # 多层GAT处理
-            h_gat = h_shared
-            for i, gat_layer in enumerate(self.gat_layers):
-                if i == 0:
-                    h_gat = gat_layer(h_gat, edge_index, edge_attr=edge_weights)
-                else:
-                    # 添加残差连接
-                    identity = h_gat
-                    h_gat = gat_layer(h_gat, edge_index, edge_attr=edge_weights)
-                    if identity.shape[-1] == h_gat.shape[-1]:  # 维度匹配时添加残差
-                        h_gat = h_gat + identity
+            # 第一层GAT处理
+            h1 = self.gat_layers[0](h, edge_index, edge_attr=edge_weights)
+            h1 = F.relu(h1)
+            h1 = self.dropout(h1)
 
-                if i < len(self.gat_layers) - 1:  # 非最后一层
-                    h_gat = self.activation(h_gat)
-                    h_gat = self.dropout(h_gat)
+            # 第二层GAT处理(增加消息传递迭代次数)
+            h2 = self.gat_layers[1](h1, edge_index, edge_attr=edge_weights)
+            h2 = F.relu(h2)
+            h2 = self.dropout(h2)
 
-            # GAT流输出
-            gat_out = self.gat_out(h_gat)
-
-            # 自适应融合
-            alpha = self.density_encoder(density_feat).expand(x.size(0), -1)
-            x = alpha * gat_out + (1 - alpha) * mlp_out
+            # 残差连接(避免过平滑)
+            h_res = self.residual_proj(h)
+            x = h2 + h_res
+            x = self.gat_out(x)
         else:
-            # 无GAT时使用增强的MLP
-            x = mlp_out + self.enhanced_mlp(h_shared)
+            # 无GAT时使用MLP
+            x = self.mlp_stream(h)
 
-        # 最终层规范化和预测
-        x = self.layer_norm(x)
-        x = self.activation(x)
-        x = self.dropout(x)
-        x = self.out_lin1(x)
-        x = self.activation(x)
-        x = self.dropout(x)
-        x = self.out_lin2(x)
+        # 添加全局信息聚合(处理分散的连通分量)
+        if self.use_global_node and x.size(0) > 1:
+            # 计算节点注意力权重
+            attn_weights = torch.softmax(self.global_attn(x), dim=0)
+            # 全局图表示
+            global_repr = torch.sum(x * attn_weights, dim=0, keepdim=True)
+            # 全局信息处理
+            global_info = self.global_proj(global_repr)
+            # 将全局信息广播到所有节点
+            x = x + global_info
+
+        # 最终层
+        x = self.out_lin(x)
 
         return x
 
@@ -202,9 +175,9 @@ class GATRegressor:
         self,
         node_feature_columns,
         dependency_feature_columns,
-        hidden_dim=32,
-        heads=[4, 4, 2],
-        dropout=0.1,
+        hidden_dim=16,
+        heads=None,
+        dropout=0.3,
         alpha=0.0001,
         loss="MSE",
         penalty="l2",
@@ -214,7 +187,7 @@ class GATRegressor:
         shuffle=True,
         epsilon=0.1,
         random_state=None,
-        lr=0.0001,
+        lr=0.005,
         warm_start=False,
         n_iter_no_change=5,
         use_self_loops_only=False,
@@ -226,7 +199,7 @@ class GATRegressor:
             node_feature_columns: 用于训练的节点特征列名列表
             dependency_feature_columns: 用于训练的边特征列名列表
             hidden_dim: GAT隐藏层维度
-            heads: 注意力头数
+            heads: 注意力头数，若为None则不使用GAT层
             dropout: Dropout率
             alpha: 正则化系数，类似于SGDRegressor中的alpha
             loss: 损失函数类型，可选'MSE'或'Huber'
@@ -281,10 +254,10 @@ class GATRegressor:
         penalty_str = self.penalty if self.penalty is not None else "none"
 
         # 注意力头数
-        if len(self.heads) == 0:
+        if self.heads is None:
             heads_str = "nohead"  # 特殊标识符表示无GAT层的MLP模型
         else:
-            heads_str = "_".join([str(h) for h in self.heads])
+            heads_str = str(self.heads)
 
         base_str = f"GATRegressor_{self.loss}_{self.hidden_dim}_{penalty_str}_{heads_str}_a{self.alpha}_dr{self.dropout}_lr{self.lr}"
 
@@ -337,42 +310,29 @@ class GATRegressor:
                 -1, 1
             )
 
-            if self.use_self_loops_only or bug_id not in edge_features.index:
-                # 创建自环
-                edge_index = torch.stack(
-                    [torch.arange(len(file_ids)), torch.arange(len(file_ids))]
-                )
-                edge_attr = torch.zeros(
-                    (len(file_ids), len(self.dependency_feature_columns))
-                )
-                if bug_id not in edge_features.index:
-                    eprint(f"警告: bug ID {bug_id} 在边数据中不存在")
+            if self.heads is None:
+                # MLP模式：不需要任何边数据
+                edge_index = None
+                edge_attr = None
+            elif self.use_self_loops_only:
+                # 使用空边集，让GATConv自己添加自环
+                edge_index = torch.zeros((2, 0), dtype=torch.long)
+                edge_attr = torch.zeros((0, len(self.dependency_feature_columns)))
             else:
                 # 获取该bug的边信息
                 bug_edges = edge_features.loc[bug_id]
-                if len(bug_edges) > 0:
-                    # 使用pandas向量化操作映射source和target到索引
-                    source_indices = bug_edges["source"].map(file_to_idx).values
-                    target_indices = bug_edges["target"].map(file_to_idx).values
 
-                    # 准备边索引和边特征
-                    edge_index = torch.tensor(
-                        np.vstack([source_indices, target_indices]), dtype=torch.long
-                    )
-                    edge_attr = torch.tensor(
-                        bug_edges[self.dependency_feature_columns].values,
-                        dtype=torch.float,
-                    )
-                else:
-                    # 如果没有边，创建自环
-                    edge_index = torch.stack(
-                        [torch.arange(len(file_ids)), torch.arange(len(file_ids))]
-                    )
-                    edge_attr = torch.zeros(
-                        (len(file_ids), len(self.dependency_feature_columns))
-                    )
-                    eprint(f"警告: bug ID {bug_id} 的边数据为空，使用自环")
+                # 使用真实边数据
+                source_indices = bug_edges["source"].map(file_to_idx).values
+                target_indices = bug_edges["target"].map(file_to_idx).values
 
+                edge_index = torch.tensor(
+                    np.vstack([source_indices, target_indices]), dtype=torch.long
+                )
+                edge_attr = torch.tensor(
+                    bug_edges[self.dependency_feature_columns].values,
+                    dtype=torch.float,
+                )
             # 创建数据对象
             data = Data(
                 x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, bug_id=bug_id
@@ -450,13 +410,11 @@ class GATRegressor:
 
         # 创建优化器
         if self.penalty == "l2":
-            # 对于L2正则化，只使用Adam的weight_decay参数
             self.optimizer = Adam(
                 self.model.parameters(), lr=self.lr, weight_decay=self.alpha
             )
         else:
-            # 对于L1和elasticnet正则化，使用手动正则化
-            self.optimizer = Adam(self.model.parameters(), lr=self.lr, weight_decay=0)
+            self.optimizer = Adam(self.model.parameters(), lr=self.lr)
 
         # 训练循环
         self.model.train()
@@ -565,7 +523,7 @@ class GATRegressor:
             for data in data_list:
                 data = data.to(self.device)
                 out = self.model(data.x, data.edge_index, data.edge_attr)
-                pred = out.cpu().numpy().flatten()
+                pred = out.numpy().flatten()
                 predictions[idx : idx + len(pred)] = pred
                 idx += len(pred)
 
@@ -588,34 +546,35 @@ class Adaptive_Process(object):
         - 使用joblib并行化权重计算和模型评估过程
     """
 
-    def __init__(self):
-        """初始化方法，配置所有可用算法组件"""
+    def __init__(self, model_type="auto"):
+        """
+        初始化方法，配置所有可用算法组件
+
+        参数：
+            model_type: 选择使用的模型类型
+                "auto": 自动选择性能最佳的模型（默认）
+                "mlp": 只使用MLP模型（heads=None）
+                "gat": 只使用GAT模型（heads=数字，use_self_loops_only=False）
+                "gat_degenerative": 只使用GAT退化模型（heads=数字，use_self_loops_only=True）
+        """
         # region 算法组件配置
         # 特征权重计算方法列表（统计检验/树模型/降维方法等）
-        self.weights_methods = [
-            weights_AdaBoostClassifier,
-            weights_ExtraTreesClassifier,
-            weights_GradientBoostingClassifier,
-            weights_const,
-            weights_variance,
-            weights_chi2,
-            weights_mutual_info_classif,
-            weights_FastICA,
-            weights_kruskal_classif,
-            weights_ttest_ind_classif,
-            weights_levene_median,
-            weights_mean_var,
-            weights_maximum_absolute_deviation,
-        ]
+        self.weights_methods = get_weights_methods()
+
+        # 指定模型类型
+        self.model_type = model_type
+        if model_type not in ["auto", "mlp", "gat", "gat_degenerative"]:
+            eprint(f"警告: 未知的模型类型 '{model_type}'，使用 'auto' 模式")
+            self.model_type = "auto"
 
         # 回归模型集合
         self.reg_models: List[GATRegressor] = []
-        self.reg_models.extend(get_skmodels())
+        self.reg_models.extend(get_skmodels(self.model_type))
 
-        # 评分方法（目前仅标准评分）
-        self.score_methods: List[
-            Callable[[pd.DataFrame, List[str], np.ndarray], np.ndarray]
-        ] = [normal_score]
+        # 评分方法（标准评分）
+        self.score_method: Callable[
+            [pd.DataFrame, List[str], np.ndarray], np.ndarray
+        ] = normal_score
         # endregion
 
         # region 运行时状态存储
@@ -624,7 +583,6 @@ class Adaptive_Process(object):
         self.reg_model = None  # 当前选择的回归模型对象
         self.all_reg_models = {}  # 所有回归模型对象
         self.reg_model_score = 0  # 当前最佳回归模型得分
-        self.score_method = None  # 当前选择的评分方法（函数引用）
         # endregion
 
         # region 配置参数
@@ -650,7 +608,6 @@ class Adaptive_Process(object):
 
         # region 配置映射表（内部使用）
         self.weights_methods_map = {m.__name__: m for m in self.weights_methods}
-        self.score_methods_map = {m.__name__: m for m in self.score_methods}
         # endregion
 
     def compute_weights(self, df: pd.DataFrame, columns: List[str]):
@@ -739,7 +696,6 @@ class Adaptive_Process(object):
 
         更新：
             self.reg_model: 最佳回归模型实例
-            self.score_method: 最佳评分方法
         """
         eprint("=============== Weights Select")
         self.compute_weights(df, columns)
@@ -770,16 +726,15 @@ class Adaptive_Process(object):
 
         eprint("=============== Size and regression model select")
 
-        results: List[tuple[GATRegressor, str, float]] = Parallel(n_jobs=12)(
+        results: List[tuple[GATRegressor, str, float]] = Parallel(n_jobs=8)(
             delayed(self._train)(
                 df,
                 columns,
                 dependency_df,
                 w_weights,
-                score_method,
                 reg_model,
             )
-            for score_method, reg_model in product(self.score_methods, self.reg_models)
+            for reg_model in self.reg_models
         )
 
         res_max = 0
@@ -787,7 +742,7 @@ class Adaptive_Process(object):
         self.cv_regression_log[fold_num] = {}
 
         for res in results:
-            current_reg_model, current_score_function, current_score, cv_results = res
+            current_reg_model, current_score, cv_results = res
             current_model_name = str(current_reg_model)
 
             self.all_reg_models[current_model_name] = current_reg_model
@@ -796,13 +751,10 @@ class Adaptive_Process(object):
                 res_max = current_score
                 self.reg_model = current_reg_model
                 self.reg_model_name = current_model_name
-                self.score_method_name = current_score_function
             # 如果有CV结果，合并到主日志中
             if cv_results:
                 for model_name, scores in cv_results.items():
                     self.cv_regression_log[fold_num][model_name] = scores
-
-        self.score_method = self.score_methods_map[self.score_method_name]
 
         self.reg_model_score = res_max
         current_reg_model = self.reg_model
@@ -876,7 +828,9 @@ class Adaptive_Process(object):
         ):
             result = clf.predict(df, df_dependency)
         else:
-            print("Using weights")
+            eprint(
+                "GAT Regression model score is lower than weights method score, using weights method for prediction."
+            )
             result = np.dot(X, self.weights)
 
         self.prediction_log[fold_num] = {}
@@ -907,7 +861,6 @@ class Adaptive_Process(object):
         columns: List[str],
         dependency_df: pd.DataFrame,
         weights: np.ndarray,
-        score_method: Callable[[pd.DataFrame, List[str], np.ndarray], np.ndarray],
         reg_model: GATRegressor,
     ):
         """
@@ -918,7 +871,6 @@ class Adaptive_Process(object):
             columns (list): 特征列
             dependency_df (pd.DataFrame): 依赖数据
             weights (np.ndarray): 当前权重向量
-            score_method (function): 评分方法
             reg_model: 回归模型实例
 
         流程：
@@ -929,7 +881,7 @@ class Adaptive_Process(object):
         返回：
             tuple: (模型, 筛选方法名, 评分方法名, 平均MAP得分)
         """
-        score = score_method(df, columns, weights)
+        score = self.score_method(df, columns, weights)
         fix_score = score + df["used_in_fix"] * np.max(score)
 
         # 获取模型名称用于日志记录
@@ -996,34 +948,54 @@ class Adaptive_Process(object):
             reg_model.fit(df, dependency_df, fix_score)
 
             # 返回使用交叉验证平均得分
-            return (reg_model, score_method.__name__, cv_mean_score, cv_results)
+            return (reg_model, cv_mean_score, cv_results)
         else:
             # 原有逻辑：直接在整个训练集训练并评估
             reg_model.fit(df, dependency_df, fix_score)
             predict_score = reg_model.predict(df, dependency_df)
-            return (
-                reg_model,
-                score_method.__name__,
-                evaluate_fold(df, predict_score),
-                None,
-            )
+            return (reg_model, evaluate_fold(df, predict_score), None)
 
     # ---------------------- 辅助函数 ----------------------
 
 
-def get_skmodels():
+def get_skmodels(model_type="auto"):
+    """
+    根据指定的模型类型创建模型列表
+
+    参数：
+        model_type: 模型类型
+            "auto": 返回所有类型的模型（默认）
+            "mlp": 只返回MLP模型（heads=None）
+            "gat": 只返回GAT模型（heads=数字，use_self_loops_only=False）
+            "gat_degenerative": 只返回GAT退化模型（heads=数字，use_self_loops_only=True）
+
+    返回：
+        GATRegressor模型列表
+    """
     hidden_dim = [16]
     alpha_values = [0.0001]
-    heads = [
-        [],  # 无GAT层 (MLP基线)
-        [2],  # 单层简单GAT
-        [4],  # 单层较宽GAT
-    ]
-    loss = ["MSE", "Huber"]
-    lr_list = [0.001, 0.005, 0.01]
+    loss = ["MSE"]
+    lr_list = [0.005]
     penalty = ["elasticnet", "l2"]
     dropout_rates = [0.3]
-    use_self_loops_modes = [False, True]
+
+    # 根据模型类型配置heads和use_self_loops_modes参数
+    if model_type == "mlp":
+        # 只使用MLP模型
+        heads = [None]
+        use_self_loops_modes = [False]  # 这个参数对MLP没有影响
+    elif model_type == "gat":
+        # 只使用GAT模型
+        heads = [2, 4]
+        use_self_loops_modes = [False]
+    elif model_type == "gat_degenerative":
+        # 只使用GAT退化模型
+        heads = [2, 4]
+        use_self_loops_modes = [True]
+    else:  # "auto"或其他值
+        # 使用所有类型的模型
+        heads = [None, 2, 4]
+        use_self_loops_modes = [False, True]
 
     return [
         GATRegressor(
@@ -1049,6 +1021,7 @@ def get_skmodels():
             alpha_values,
             use_self_loops_modes,
         )
+        if not (h is None and loop is True)
     ]
 
 
@@ -1108,7 +1081,7 @@ def process(
     all_results_df.reset_index(level=1, drop=True, inplace=True)
 
     results_timestamp = time.strftime("%Y%m%d%H%M%S")
-    result_dir = f"{file_prefix}_{results_timestamp}"
+    result_dir = f"{file_prefix}_{ptemplate.model_type}_{results_timestamp}"
     os.makedirs(result_dir, exist_ok=True)
 
     # 保存训练时间统计
@@ -1165,7 +1138,7 @@ def clone_regressor(reg_model):
         node_feature_columns=reg_model.node_feature_columns,
         dependency_feature_columns=reg_model.dependency_feature_columns,
         hidden_dim=reg_model.hidden_dim,
-        heads=reg_model.heads.copy() if hasattr(reg_model, "heads") else [],
+        heads=reg_model.heads,
         dropout=reg_model.dropout,
         alpha=reg_model.alpha,
         loss=reg_model.loss,
@@ -1181,218 +1154,6 @@ def clone_regressor(reg_model):
         n_iter_no_change=reg_model.n_iter_no_change,
         use_self_loops_only=reg_model.use_self_loops_only,
     )
-
-
-# region 特征权重计算
-def _weights_normalize(weights: np.ndarray):
-    """
-    权重归一化函数
-
-    参数：
-        weights: 原始权重向量
-
-    返回：
-        weights: L1归一化后的权重向量（总和为1）
-
-    说明：
-        - 当权重总和>0时执行归一化
-        - 处理全零权重时保持原值
-    """
-    weights_sum = weights.sum()
-    if weights_sum > 0:
-        weights /= weights_sum
-
-    return weights
-
-
-def weights_chi2(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    基于卡方检验的特征权重计算
-
-    参数：
-        df (pd.DataFrame): 包含特征和标签的数据
-        columns (list): 特征列名列表
-
-    返回：
-        np.ndarray: 归一化的卡方统计量作为特征权重
-
-    实现：
-        使用sklearn.feature_selection.chi2计算各特征与目标变量的卡方统计量
-    """
-    weights = chi2(df[columns], df["used_in_fix"])
-    weights = weights[0]
-
-    return _weights_normalize(weights)
-
-
-def weights_mutual_info_classif(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """基于互信息的特征权重计算，适用于连续特征"""
-    weights = mutual_info_classif(
-        df[columns], df["used_in_fix"], discrete_features=False
-    )
-    weights = weights
-
-    return _weights_normalize(weights)
-
-
-def weights_FastICA(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """使用独立成分分析(ICA)的首个成分作为特征权重"""
-    m = FastICA(n_components=1)
-    m.fit(df[columns])
-    weights = m.components_[0]
-
-    return _weights_normalize(weights)
-
-
-def weights_variance(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """基于特征方差的权重计算，负方差置零处理"""
-    fs = VarianceThreshold()
-    fs.fit(df[columns])
-    weights = fs.variances_
-    weights[weights < 0] = 0
-
-    return _weights_normalize(weights)
-
-
-def weights_const(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """恒定权重（0.5），用作基准方法"""
-    return np.ones(df[columns].shape[1]) * 0.5
-
-
-def weights_ExtraTreesClassifier(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """基于极端随机树分类器的特征重要性"""
-    tree = ExtraTreesClassifier(n_estimators=100)
-    tree.fit(df[columns], df["used_in_fix"])
-    weights = tree.feature_importances_
-
-    return _weights_normalize(weights)
-
-
-def weights_GradientBoostingClassifier(
-    df: pd.DataFrame, columns: List[str]
-) -> np.ndarray:
-    """梯度提升回归树特征重要性"""
-    tree = GradientBoostingRegressor(n_estimators=100)
-    tree.fit(df[columns], df["used_in_fix"])
-    weights = tree.feature_importances_
-
-    return _weights_normalize(weights)
-
-
-def weights_AdaBoostClassifier(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """AdaBoost分类器特征重要性"""
-    tree = AdaBoostClassifier(n_estimators=100)
-    tree.fit(df[columns], df["used_in_fix"])
-    weights = tree.feature_importances_
-
-    return _weights_normalize(weights)
-
-
-def weights_kruskal_classif(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    Kruskal-Wallis检验统计量作为权重
-    适用于非正态分布的组间差异检验
-    """
-    weights = kruskal_classif(df[columns], df["used_in_fix"])
-    weights = weights[0]
-
-    return _weights_normalize(weights)
-
-
-def kruskal_classif(X, y):
-    """
-    执行Kruskal-Wallis H检验
-    返回各特征的检验统计量绝对值和p值
-    """
-    ret_k = []
-    ret_p = []
-
-    for column in X:
-        args = [X[safe_mask(X, y == k)][column] for k in np.unique(y)]
-        r = kruskal(*args)
-        ret_k.append(abs(r[0]))
-        ret_p.append(r[1])
-    return np.asanyarray(ret_k), np.asanyarray(ret_p)
-
-
-def weights_ttest_ind_classif(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    独立样本t检验统计量作为权重
-    假设方差不相等（Welch's t-test）
-    """
-    weights = ttest_ind_classif(df[columns], df["used_in_fix"])
-    weights = weights[0]
-
-    return _weights_normalize(weights)
-
-
-def ttest_ind_classif(X, y):
-    """执行Welch's t-test，返回绝对t值和p值"""
-    ret_k = []
-    ret_p = []
-
-    for column in X:
-        args = [X[safe_mask(X, y == k)][column] for k in np.unique(y)]
-        r = ttest_ind(*args, equal_var=False)
-        ret_k.append(abs(r[0]))
-        ret_p.append(r[1])
-    return np.asanyarray(ret_k), np.asanyarray(ret_p)
-
-
-def weights_levene_median(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    基于中位数Levene检验的权重计算
-    用于检测组间方差差异
-    """
-    weights = levene_median(df[columns], df["used_in_fix"])
-    weights = weights[0]
-
-    return _weights_normalize(weights)
-
-
-def levene_median(X, y):
-    """执行基于中位数的Levene方差齐性检验"""
-    ret_k = []
-    ret_p = []
-
-    for column in X:
-        args = [X[safe_mask(X, y == k)][column] for k in np.unique(y)]
-        r = levene(args[0], args[1], center="median")
-        ret_k.append(abs(r[0]))
-        ret_p.append(r[1])
-    return np.asanyarray(ret_k), np.asanyarray(ret_p)
-
-
-def weights_mean_var(df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-    """
-    均值-方差比率权重：
-    (修复样本的变异系数) / (非修复样本的变异系数)
-    变异系数 = 标准差 / 均值
-    """
-    weights_var = np.var(df[df["used_in_fix"] == 1][columns], axis=0)
-    weights_mean = np.mean(df[df["used_in_fix"] == 1][columns], axis=0)
-    weights_var1 = np.var(df[df["used_in_fix"] == 0][columns], axis=0)
-    weights_var1_mean = np.mean(df[df["used_in_fix"] == 0][columns], axis=0)
-
-    return (weights_var / weights_mean) / (weights_var1 / weights_var1_mean)
-
-
-def weights_maximum_absolute_deviation(
-    df: pd.DataFrame, columns: List[str]
-) -> np.ndarray:
-    """
-    最大绝对偏差权重：
-    计算修复样本各特征值与其最大值的平均绝对偏差
-    """
-    weights_max = np.max(df[df["used_in_fix"] == 1][columns], axis=0)
-    weights_mad = np.mean(
-        np.abs(df[df["used_in_fix"] == 1][columns] - weights_max), axis=0
-    )
-
-    return weights_mad
-
-
-# endregion
 
 
 def weights_on_df(
@@ -1552,7 +1313,7 @@ def main():
         )
 
     results = [r for r in results if r is not None]
-    eprint("======Results======")
+    print("======Results======")
     for result in results:
         print("name ", result["name"])
         print_metrics(*result["results"])
