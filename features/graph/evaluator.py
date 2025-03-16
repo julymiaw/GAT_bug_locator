@@ -46,7 +46,6 @@ class AdaptiveGATEvaluator:
         self.regression_log = {}
         self.prescoring_log = {}
         self.prediction_log = {}
-        self.cv_regression_log = {}
         self.best_regression = {}
         self.best_prescoring = {}
 
@@ -96,16 +95,6 @@ class AdaptiveGATEvaluator:
             print("✓ 成功加载预测日志")
         except Exception as e:
             print(f"✗ 无法加载预测日志: {e}")
-
-        # 交叉验证日志
-        try:
-            with open(
-                os.path.join(self.log_dir, "Adaptive_cv_regression_log.json"), "r"
-            ) as f:
-                self.cv_regression_log = json.load(f)
-            print("✓ 成功加载交叉验证日志")
-        except Exception as e:
-            print(f"✗ 无法加载交叉验证日志: {e}")
 
         # 最佳回归模型日志
         try:

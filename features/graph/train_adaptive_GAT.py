@@ -972,7 +972,7 @@ def get_skmodels(model_type="auto"):
     返回：
         GATRegressor模型列表
     """
-    hidden_dim = [16]
+    hidden_dim = [16, 32]
     alpha_values = [0.0001]
     loss = ["MSE"]
     lr_list = [0.005]
@@ -986,18 +986,18 @@ def get_skmodels(model_type="auto"):
         use_self_loops_modes = [False]  # 这个参数对MLP没有影响
     elif model_type == "gat":
         # 只使用GAT模型
-        heads = [2, 4]
+        heads = [2, 4, 8]
         use_self_loops_modes = [False]
     elif model_type == "gat_degenerative":
         # 只使用GAT退化模型
-        heads = [2, 4]
+        heads = [2, 4, 8]
         use_self_loops_modes = [True]
     else:  # "auto"或其他值
         # 使用所有类型的模型
-        heads = [None, 2, 4]
+        heads = [None, 2, 4, 8]
         use_self_loops_modes = [False, True]
 
-    return [
+    models = [
         GATRegressor(
             node_feature_columns.copy(),
             edge_feature_columns.copy(),
@@ -1023,6 +1023,11 @@ def get_skmodels(model_type="auto"):
         )
         if not (h is None and loop is True)
     ]
+
+    # 输出模型数量信息
+    eprint(f"创建了 {len(models)} 个模型，当前类型: {model_type}")
+
+    return models
 
 
 def _process(
