@@ -16,8 +16,9 @@ import os
 import json
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib as mpl
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from typing import Dict, List, Any
 import argparse
 from train_utils import eprint
@@ -46,6 +47,7 @@ class AdaptiveGATEvaluator:
         self.regression_log = {}
         self.prescoring_log = {}
         self.prediction_log = {}
+        self.cv_regression_log = {}
         self.best_regression = {}
         self.best_prescoring = {}
 
@@ -95,6 +97,16 @@ class AdaptiveGATEvaluator:
             print("✓ 成功加载预测日志")
         except Exception as e:
             print(f"✗ 无法加载预测日志: {e}")
+
+        # 交叉验证日志
+        # try:
+        #     with open(
+        #         os.path.join(self.log_dir, "Adaptive_cv_regression_log.json"), "r"
+        #     ) as f:
+        #         self.cv_regression_log = json.load(f)
+        #     print("✓ 成功加载交叉验证日志")
+        # except Exception as e:
+        #     print(f"✗ 无法加载交叉验证日志: {e}")
 
         # 最佳回归模型日志
         try:
@@ -202,15 +214,10 @@ class AdaptiveGATEvaluator:
         # 获取最佳模型
         best_models = self.model_performance_df[self.model_performance_df["is_best"]]
 
-        # 平均性能分析
-        avg_train = self.model_performance_df["train_score"].mean()
-        avg_test = self.model_performance_df["test_score"].mean()
-
         # 生成摘要报告
         summary = {
             "总模型数": len(self.model_performance_df),
-            "平均训练得分": avg_train,
-            "平均测试得分": avg_test,
+            "最佳模型fold": best_models["fold"].tolist(),
             "最佳模型": best_models["model_name"].tolist(),
             "最佳模型训练得分": best_models["train_score"].tolist(),
             "最佳模型测试得分": best_models["test_score"].tolist(),
@@ -223,11 +230,10 @@ class AdaptiveGATEvaluator:
         # 打印摘要
         print("\n===== 性能摘要 =====")
         print(f"总模型数: {summary['总模型数']}")
-        print(f"平均训练得分: {summary['平均训练得分']:.4f}")
-        print(f"平均测试得分: {summary['平均测试得分']:.4f}")
 
         for i, model in enumerate(summary["最佳模型"]):
-            print(f"\n最佳模型 {i+1}: {model}")
+            print(f"\n折 {summary['最佳模型fold'][i]}:")
+            print(f"  最佳模型: {model}")
             print(f"  训练得分: {summary['最佳模型训练得分'][i]:.4f}")
             print(f"  测试得分: {summary['最佳模型测试得分'][i]:.4f}")
 
@@ -334,64 +340,62 @@ class AdaptiveGATEvaluator:
         plt.close()
 
     def analyze_self_loops_effect(self):
-        """分析自环模式对模型性能的影响"""
-        # 检查是否有自环相关的数据
-        if "use_self_loops" not in self.model_performance_df.columns:
-            print("⚠ 数据中没有自环模式相关信息，跳过分析")
+        """分析自环模式对模型性能的影响，按fold分组进行分析"""
+        # 确保model_category字段存在
+        if "model_category" not in self.model_performance_df.columns:
+            print("⚠ 数据中没有model_category信息，无法绘制分类模型对比图")
             return None
 
-        # 获取使用自环和不使用自环的模型子集
-        self_loop_models = self.model_performance_df[
-            self.model_performance_df["use_self_loops"] == True
-        ]
-        real_edge_models = self.model_performance_df[
-            self.model_performance_df["use_self_loops"] == False
-        ]
+        # 初始化结果结构
+        self_loop_stats = {}
 
-        # 配对分析：查找具有相同配置但自环模式不同的模型对
-        model_pairs = []
-
-        for _, self_loop_model in self_loop_models.iterrows():
-            # 查找相同配置但不使用自环的模型
-            matching_models = real_edge_models[
-                (real_edge_models["loss_type"] == self_loop_model["loss_type"])
-                & (real_edge_models["hidden_dim"] == self_loop_model["hidden_dim"])
-                & (real_edge_models["penalty"] == self_loop_model["penalty"])
-                & (real_edge_models["alpha"] == self_loop_model["alpha"])
-                & (real_edge_models["dropout"] == self_loop_model["dropout"])
-                & (
-                    real_edge_models["learning_rate"]
-                    == self_loop_model["learning_rate"]
-                )
-                & (real_edge_models["heads"] == self_loop_model["heads"])
+        # 按fold分析
+        for fold in self.model_performance_df["fold"].unique():
+            # 获取当前fold的模型
+            fold_models = self.model_performance_df[
+                self.model_performance_df["fold"] == fold
+            ]
+            fold_self_loop = fold_models[
+                fold_models["model_category"] == "gat_selfloop"
+            ]
+            fold_real_edge = fold_models[
+                fold_models["model_category"] == "gat_realedge"
             ]
 
-            if not matching_models.empty:
-                real_edge_model = matching_models.iloc[0]
+            # 配对分析：查找具有相同配置但自环模式不同的模型对
+            fold_pairs = []
 
-                model_pairs.append(
-                    {
+            for _, self_loop_model in fold_self_loop.iterrows():
+                # 查找相同配置但不使用自环的模型
+                matching_models = fold_real_edge[
+                    (fold_real_edge["loss_type"] == self_loop_model["loss_type"])
+                    & (fold_real_edge["hidden_dim"] == self_loop_model["hidden_dim"])
+                    & (fold_real_edge["penalty"] == self_loop_model["penalty"])
+                    & (fold_real_edge["alpha"] == self_loop_model["alpha"])
+                    & (fold_real_edge["dropout"] == self_loop_model["dropout"])
+                    & (
+                        fold_real_edge["learning_rate"]
+                        == self_loop_model["learning_rate"]
+                    )
+                    & (fold_real_edge["heads"] == self_loop_model["heads"])
+                ]
+
+                if not matching_models.empty:
+                    real_edge_model = matching_models.iloc[0]
+
+                    pair_info = {
                         "self_loop_model": self_loop_model["model_name"],
                         "real_edge_model": real_edge_model["model_name"],
                         "self_loop_train": self_loop_model["train_score"],
                         "real_edge_train": real_edge_model["train_score"],
                         "self_loop_test": self_loop_model["test_score"],
                         "real_edge_test": real_edge_model["test_score"],
-                        "test_improvement": self_loop_model["test_score"]
-                        - real_edge_model["test_score"],
                     }
-                )
 
-        # 计算总体统计
-        self_loop_stats = {
-            "总体比较": {
-                "平均训练得分 (自环)": self_loop_models["train_score"].mean(),
-                "平均训练得分 (真实边)": real_edge_models["train_score"].mean(),
-                "平均测试得分 (自环)": self_loop_models["test_score"].mean(),
-                "平均测试得分 (真实边)": real_edge_models["test_score"].mean(),
-            },
-            "模型对比较": model_pairs,
-        }
+                    fold_pairs.append(pair_info)
+
+            # 保存当前fold的统计信息
+            self_loop_stats[fold] = fold_pairs
 
         # 保存自环分析结果
         with open(os.path.join(self.output_dir, "self_loops_analysis.json"), "w") as f:
@@ -399,59 +403,161 @@ class AdaptiveGATEvaluator:
                 self_loop_stats, f, indent=4, ensure_ascii=False, cls=NumpyEncoder
             )
 
-        # 绘制自环效果图表
-        self.plot_self_loops_effect(model_pairs)
-
-        # 打印摘要
-        print("\n===== 自环模式效果摘要 =====")
-        print(f"自环模型数量: {len(self_loop_models)}")
-        print(f"真实边模型数量: {len(real_edge_models)}")
-        print(f"配对比较模型数: {len(model_pairs)}")
-        print(
-            f"自环模型平均测试得分: {self_loop_stats['总体比较']['平均测试得分 (自环)']:.4f}"
-        )
-        print(
-            f"真实边模型平均测试得分: {self_loop_stats['总体比较']['平均测试得分 (真实边)']:.4f}"
-        )
+        # 绘制不同类别模型的对比散点图
+        self.plot_model_categories_comparison(self_loop_stats)
 
         return self_loop_stats
 
-    def plot_self_loops_effect(self, model_pairs: List[Dict]):
+    def plot_model_categories_comparison(self, fold_comparisons):
         """
-        绘制自环效果的图表
+        绘制不同类别模型的对比散点图(MLP, GAT自环, GAT真实边)
 
         参数:
-            model_pairs: 包含配对模型信息的字典列表
+            fold_comparisons: 按fold组织的比较数据字典
         """
-        if not model_pairs:
+        if not fold_comparisons:
             return
 
-        # 转换为DataFrame
-        pairs_df = pd.DataFrame(model_pairs)
+        # 准备数据
+        all_models = self.model_performance_df.copy()
 
-        # 自环与真实边模型的测试性能比较
-        plt.figure(figsize=(10, 6))
+        # 创建散点图
+        plt.figure(figsize=(12, 10))
 
-        # 按性能提升排序
-        sorted_pairs = pairs_df.sort_values(by="test_improvement", ascending=False)
+        # 为每个fold分配不同颜色
+        folds = all_models["fold"].unique()
+        colors = plt.cm.tab10(np.linspace(0, 1, len(folds)))
+        fold_color_map = {fold: colors[i] for i, fold in enumerate(folds)}
 
-        plt.bar(
-            range(len(sorted_pairs)), sorted_pairs["self_loop_test"], label="自环模型"
+        legend_elements = []
+
+        # 为每种模型类别定义标记
+        markers = {
+            "baseline_mlp": "^",  # 三角形
+            "gat_selfloop": "s",  # 方形
+            "gat_realedge": "o",  # 圆形
+        }
+
+        # 模型类别名称映射
+        category_names = {
+            "baseline_mlp": "MLP模型",
+            "gat_selfloop": "GAT自环模型",
+            "gat_realedge": "GAT真实边模型",
+        }
+
+        # 绘制所有模型点
+        for fold in folds:
+            fold_models = all_models[all_models["fold"] == fold]
+
+            # 按模型类别绘制
+            for category, marker in markers.items():
+                category_models = fold_models[fold_models["model_category"] == category]
+
+                if not category_models.empty:
+                    plt.scatter(
+                        category_models["train_score"],
+                        category_models["test_score"],
+                        marker=marker,
+                        s=80,
+                        color=fold_color_map[fold],
+                        alpha=0.7,
+                        label="_nolegend_",
+                    )
+
+                    # 只为每个类别的第一个fold添加图例
+                    if fold == folds[0]:
+                        legend_elements.append(
+                            Line2D(
+                                [0],
+                                [0],
+                                marker=marker,
+                                color="k",
+                                linestyle="none",
+                                markerfacecolor="none",
+                                markeredgewidth=1.5,
+                                label=f"{category_names[category]}",
+                                markersize=10,
+                            )
+                        )
+
+            legend_elements.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="w",
+                    label=f"折 {fold}",
+                    markerfacecolor=fold_color_map[fold],
+                    markersize=10,
+                )
+            )
+
+        # 标记最佳模型
+        best_models = all_models[all_models["is_best"]]
+        legend_elements.append(
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markeredgecolor="red",
+                markerfacecolor="none",
+                markersize=12,
+                label="最佳模型",
+                markeredgewidth=2,
+            )
         )
-        plt.bar(
-            range(len(sorted_pairs)),
-            sorted_pairs["real_edge_test"],
-            label="真实边模型",
-            alpha=0.6,
-        )
+        for _, model in best_models.iterrows():
+            category = model["model_category"]
+            marker = markers[category]
+            plt.scatter(
+                model["train_score"],
+                model["test_score"],
+                marker=marker,
+                s=120,
+                facecolors="none",
+                edgecolors="red",
+                linewidths=2,
+                label="_nolegend_",
+            )
 
-        plt.xlabel("模型对索引")
-        plt.ylabel("测试得分(MAP)")
-        plt.title("自环模型vs真实边模型测试性能对比")
-        plt.legend()
-        plt.grid(axis="y", linestyle="--", alpha=0.7)
+        # 用虚线连接配对的模型 - 使用按fold组织的配对模型
+        for fold, fold_data in fold_comparisons.items():
+            for pair in fold_data:
+                self_loop_model = all_models[
+                    (all_models["model_name"] == pair["self_loop_model"])
+                    & (all_models["fold"] == fold)
+                ]
+                real_edge_model = all_models[
+                    (all_models["model_name"] == pair["real_edge_model"])
+                    & (all_models["fold"] == fold)
+                ]
+
+                if not self_loop_model.empty and not real_edge_model.empty:
+                    plt.plot(
+                        [
+                            self_loop_model.iloc[0]["train_score"],
+                            real_edge_model.iloc[0]["train_score"],
+                        ],
+                        [
+                            self_loop_model.iloc[0]["test_score"],
+                            real_edge_model.iloc[0]["test_score"],
+                        ],
+                        "k--",  # 黑色虚线
+                        alpha=0.5,
+                        linewidth=0.7,
+                    )
+
+        # 添加辅助元素
+        plt.grid(True, linestyle="--", alpha=0.7)
+        plt.xlabel("回归阶段得分", fontsize=12)
+        plt.ylabel("测试阶段得分", fontsize=12)
+        plt.title("不同类别模型性能对比", fontsize=14)
+
+        plt.legend(handles=legend_elements, loc="best")
+
         plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, "self_loop_vs_real_edge_test.png"))
+        plt.savefig(os.path.join(self.output_dir, "model_categories_comparison.png"))
         plt.close()
 
     def analyze_training_time(self):
@@ -505,10 +611,10 @@ class AdaptiveGATEvaluator:
         best_models = self.model_performance_df[self.model_performance_df["is_best"]]
         best_model_category = best_models["model_category"].iloc[0]
 
-        # 按模型类别分组计算平均性能
+        # 按模型类别分组计算最佳性能
         category_performance = (
             self.model_performance_df.groupby("model_category")["test_score"]
-            .agg(["mean", "std", "min", "max", "count"])
+            .agg(["max"])
             .reset_index()
         )
 
@@ -533,10 +639,10 @@ class AdaptiveGATEvaluator:
                         "仅自环GAT模型优于GAT模型"
                         if category_performance[
                             category_performance["model_category"] == "gat_selfloop"
-                        ]["mean"].iloc[0]
+                        ]["max"].iloc[0]
                         > category_performance[
                             category_performance["model_category"] == "gat_realedge"
-                        ]["mean"].iloc[0]
+                        ]["max"].iloc[0]
                         else "GAT模型优于仅自环GAT模型"
                     )
                     if "gat_selfloop" in category_performance["model_category"].values
@@ -548,10 +654,10 @@ class AdaptiveGATEvaluator:
                         "MLP模型表现优于GAT模型"
                         if category_performance[
                             category_performance["model_category"] == "baseline_mlp"
-                        ]["mean"].iloc[0]
+                        ]["max"].iloc[0]
                         > category_performance[
                             category_performance["model_category"] == "gat_realedge"
-                        ]["mean"].iloc[0]
+                        ]["max"].iloc[0]
                         else "GAT模型表现优于MLP模型"
                     )
                     if "baseline_mlp" in category_performance["model_category"].values
@@ -559,18 +665,6 @@ class AdaptiveGATEvaluator:
                     else "未比较GAT与MLP"
                 ),
             ],
-            "推荐参数设置": {
-                param: best_models[param].iloc[0]
-                for param in [
-                    "loss_type",
-                    "hidden_dim",
-                    "penalty",
-                    "learning_rate",
-                    "dropout",
-                    "alpha",
-                ]
-                if param in best_models.columns
-            },
         }
 
         # 保存最终报告
@@ -592,9 +686,6 @@ class AdaptiveGATEvaluator:
 
 主要发现:
 {chr(10).join('- ' + finding for finding in report['主要发现'])}
-
-推荐参数设置:
-{chr(10).join('- ' + param + ': ' + str(value) for param, value in report['推荐参数设置'].items())}
 =========================================
         """
 
@@ -637,6 +728,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # args = argparse.Namespace(
+    #     log_dir="tomcat_auto_20250320041613/",
+    #     output=None,
+    # )
 
     # 创建评估器并运行分析
     evaluator = AdaptiveGATEvaluator(args.log_dir)

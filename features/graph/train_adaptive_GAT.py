@@ -31,6 +31,7 @@ from torch_geometric.data import Data
 
 from metrics import calculate_metric_results, print_metrics
 from train_utils import eprint
+from ranking_losses import WeightedRankMSELoss
 
 from weight_functions import get_weights_methods
 
@@ -158,7 +159,7 @@ class GATModule(nn.Module):
             # 全局信息处理
             global_info = self.global_proj(global_repr)
             # 将全局信息广播到所有节点
-            x = x + global_info
+            x = x + 2.0 * global_info
 
         # 最终层
         x = self.out_lin(x)
@@ -186,7 +187,7 @@ class GATRegressor:
         tol=1e-4,
         shuffle=True,
         epsilon=0.1,
-        random_state=None,
+        random_state=42,
         lr=0.005,
         warm_start=False,
         n_iter_no_change=5,
@@ -366,6 +367,8 @@ class GATRegressor:
             return nn.MSELoss()
         elif self.loss == "Huber":
             return nn.HuberLoss(delta=self.epsilon)
+        elif self.loss == "WeightedMSE":
+            return WeightedRankMSELoss(fix_weight=5.0)
         else:
             return nn.MSELoss()  # 默认使用MSE
 
@@ -479,9 +482,9 @@ class GATRegressor:
                 self.n_iter_no_change is not None
                 and no_improvement_count >= self.n_iter_no_change
             ):
-                eprint(
-                    f"{str(self)}: Converged after {epoch+1} epochs. Loss: {best_loss}"
-                )
+                # eprint(
+                #     f"{str(self)}: Converged after {epoch+1} epochs. Loss: {best_loss}"
+                # )
                 break
 
         # 恢复最佳权重
@@ -724,7 +727,7 @@ class Adaptive_Process(object):
         self.best_prescoring_log[fold_num] = w_method
         eprint("===============")
 
-        eprint("=============== Size and regression model select")
+        eprint("=============== Regression model select")
 
         results: List[tuple[GATRegressor, str, float]] = Parallel(n_jobs=8)(
             delayed(self._train)(
@@ -939,7 +942,7 @@ class Adaptive_Process(object):
             # 计算平均交叉验证得分
             cv_mean_score = np.mean(cv_scores)
             eprint(
-                f"模型 {model_name} 的交叉验证得分: {cv_mean_score:.4f} (std: {np.std(cv_scores):.4f})"
+                f"{model_name} 的交叉验证得分: {cv_mean_score:.4f} (std: {np.std(cv_scores):.4f})"
             )
 
             cv_results = {model_name: [float(score) for score in cv_scores]}
@@ -972,11 +975,11 @@ def get_skmodels(model_type="auto"):
     返回：
         GATRegressor模型列表
     """
-    hidden_dim = [16, 32]
+    hidden_dim = [16]
     alpha_values = [0.0001]
-    loss = ["MSE"]
+    loss = ["MSE", "WeightedMSE"]
     lr_list = [0.005]
-    penalty = ["elasticnet", "l2"]
+    penalty = ["l2"]
     dropout_rates = [0.3]
 
     # 根据模型类型配置heads和use_self_loops_modes参数
@@ -986,15 +989,15 @@ def get_skmodels(model_type="auto"):
         use_self_loops_modes = [False]  # 这个参数对MLP没有影响
     elif model_type == "gat":
         # 只使用GAT模型
-        heads = [2, 4, 8]
+        heads = [2, 4]
         use_self_loops_modes = [False]
     elif model_type == "gat_degenerative":
         # 只使用GAT退化模型
-        heads = [2, 4, 8]
+        heads = [2, 4]
         use_self_loops_modes = [True]
     else:  # "auto"或其他值
         # 使用所有类型的模型
-        heads = [None, 2, 4, 8]
+        heads = [None, 2, 4]
         use_self_loops_modes = [False, True]
 
     models = [
@@ -1051,6 +1054,7 @@ def process(
     fold_dependency_testing: Dict[int, pd.DataFrame],
     fold_dependency_training: Dict[int, pd.DataFrame],
     file_prefix: str,
+    mode="train",
 ):
     """
     主处理函数
@@ -1063,6 +1067,7 @@ def process(
         fold_dependency_testing: 测试依赖数据
         fold_dependency_training: 训练依赖数据
         file_prefix: 文件前缀
+        mode: 训练时，保存日志。预测时，不保存日志
     """
     results_list = []
 
@@ -1084,6 +1089,12 @@ def process(
 
     all_results_df = pd.concat(results_list)
     all_results_df.reset_index(level=1, drop=True, inplace=True)
+
+    if mode == "predict":
+        return {
+            "name": ptemplate.name,
+            "results": calculate_metric_results(all_results_df),
+        }
 
     results_timestamp = time.strftime("%Y%m%d%H%M%S")
     result_dir = f"{file_prefix}_{ptemplate.model_type}_{results_timestamp}"
@@ -1302,26 +1313,18 @@ def main():
         fold_dependency_training,
     ) = load(f"../joblib_memmap_{file_prefix}_graph/data_memmap", mmap_mode="r")
 
-    models = [Adaptive_Process()]
-    results = []
-    for m in models:
-        results.append(
-            process(
-                m,
-                fold_number,
-                fold_testing,
-                fold_training,
-                fold_dependency_testing,
-                fold_dependency_training,
-                file_prefix,
-            )
-        )
+    result = process(
+        Adaptive_Process(),
+        fold_number,
+        fold_testing,
+        fold_training,
+        fold_dependency_testing,
+        fold_dependency_training,
+        file_prefix,
+    )
 
-    results = [r for r in results if r is not None]
     print("======Results======")
-    for result in results:
-        print("name ", result["name"])
-        print_metrics(*result["results"])
+    print_metrics(*result["results"])
 
 
 if __name__ == "__main__":
