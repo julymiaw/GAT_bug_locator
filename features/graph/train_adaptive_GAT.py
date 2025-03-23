@@ -33,7 +33,7 @@ from metrics import calculate_metric_results, print_metrics
 from train_utils import eprint
 from ranking_losses import WeightedRankMSELoss
 
-from weight_functions import get_weights_methods
+from weight_functions import evaluate_fold, get_weights_methods
 
 node_feature_columns = ["f" + str(i) for i in range(1, 20)]
 edge_feature_columns = ["t" + str(i) for i in range(1, 13)]
@@ -604,7 +604,6 @@ class Adaptive_Process(object):
         self.prescoring_log = {}  # {fold_num: {方法名: 评估得分}}
         self.best_prescoring_log = {}  # {fold_num: 最佳权重方法名}
         self.regression_log = {}  # 回归模型评估：{折号: {模型名: 评估得分}}
-        self.cv_regression_log = {}  # {fold_num: {模型名: [各折CV得分]}}
         self.prediction_log = {}  # 预测结果日志：{折号: {模型名: 评估得分}}
         self.best_regression_log = {}  # {fold_num: 最佳模型名}
         # endregion
@@ -729,7 +728,7 @@ class Adaptive_Process(object):
 
         eprint("=============== Regression model select")
 
-        results: List[tuple[GATRegressor, str, float]] = Parallel(n_jobs=8)(
+        results: List[tuple[GATRegressor, float]] = Parallel(n_jobs=8)(
             delayed(self._train)(
                 df,
                 columns,
@@ -740,27 +739,20 @@ class Adaptive_Process(object):
             for reg_model in self.reg_models
         )
 
-        res_max = 0
+        self.reg_model_score = 0
         self.regression_log[fold_num] = {}
-        self.cv_regression_log[fold_num] = {}
 
         for res in results:
-            current_reg_model, current_score, cv_results = res
+            current_reg_model, current_score = res
             current_model_name = str(current_reg_model)
 
             self.all_reg_models[current_model_name] = current_reg_model
             self.regression_log[fold_num][current_model_name] = current_score
-            if current_score > res_max:
-                res_max = current_score
+            if current_score > self.reg_model_score:
                 self.reg_model = current_reg_model
                 self.reg_model_name = current_model_name
-            # 如果有CV结果，合并到主日志中
-            if cv_results:
-                for model_name, scores in cv_results.items():
-                    self.cv_regression_log[fold_num][model_name] = scores
+                self.reg_model_score = current_score
 
-        self.reg_model_score = res_max
-        current_reg_model = self.reg_model
         self.best_regression_log[fold_num] = self.reg_model_name
 
         eprint(
@@ -804,13 +796,13 @@ class Adaptive_Process(object):
         clf: GATRegressor,
         df: pd.DataFrame,
         df_dependency: pd.DataFrame,
-        fold_num=0,
+        fold_num,
     ):
         """
         预测函数
 
         参数：
-            clf: 训练好的回归模型（实际可能未使用）
+            clf: 训练好的回归模型
             df (pd.DataFrame): 测试数据
             df_dependency (pd.DataFrame）: 依赖数据
             fold_num: 当前折号
@@ -838,20 +830,15 @@ class Adaptive_Process(object):
 
         self.prediction_log[fold_num] = {}
 
+        # 记录权重和模型
+        model_result = np.dot(X, self.weights)
+        map_score = evaluate_fold(df, model_result)
+        self.prediction_log[fold_num]["weights_method"] = map_score
+
         for model_name, model in self.all_reg_models.items():
-            try:
-                model_result = model.predict(df, df_dependency)
-
-                # 计算当前模型在测试集上的MAP分数
-                r_temp = df[["used_in_fix"]].copy(deep=False)
-                r_temp["result"] = model_result
-                _, map_score, _, _ = calculate_metric_results(r_temp)
-
-                # 记录到日志
-                self.prediction_log[fold_num][model_name] = map_score
-            except Exception as e:
-                eprint(f"Error predicting with model {model_name}: {str(e)}")
-                self.prediction_log[fold_num][model_name] = None
+            model_result = model.predict(df, df_dependency)
+            map_score = evaluate_fold(df, model_result)
+            self.prediction_log[fold_num][model_name] = map_score
 
         r = df[["used_in_fix"]].copy(deep=False)
         r["result"] = result
@@ -882,15 +869,12 @@ class Adaptive_Process(object):
             3. 使用交叉验证训练回归模型并评估
 
         返回：
-            tuple: (模型, 筛选方法名, 评分方法名, 平均MAP得分)
+            tuple: (模型, 平均MAP得分)
         """
         score = self.score_method(df, columns, weights)
         fix_score = score + df["used_in_fix"] * np.max(score)
 
-        # 获取模型名称用于日志记录
-        model_name = str(reg_model)
-
-        cv_results = None
+        reg_model.fit(df, dependency_df, fix_score)
 
         # 根据配置决定是否使用交叉验证
         if self.use_training_cross_validation:
@@ -940,23 +924,13 @@ class Adaptive_Process(object):
                 cv_scores.append(val_map)
 
             # 计算平均交叉验证得分
-            cv_mean_score = np.mean(cv_scores)
-            eprint(
-                f"{model_name} 的交叉验证得分: {cv_mean_score:.4f} (std: {np.std(cv_scores):.4f})"
-            )
-
-            cv_results = {model_name: [float(score) for score in cv_scores]}
-
-            # 在全部数据上重新训练模型，用于后续预测
-            reg_model.fit(df, dependency_df, fix_score)
-
-            # 返回使用交叉验证平均得分
-            return (reg_model, cv_mean_score, cv_results)
+            map_score = np.mean(cv_scores)
         else:
-            # 原有逻辑：直接在整个训练集训练并评估
-            reg_model.fit(df, dependency_df, fix_score)
             predict_score = reg_model.predict(df, dependency_df)
-            return (reg_model, evaluate_fold(df, predict_score), None)
+            map_score = evaluate_fold(df, predict_score)
+
+        eprint(f"{str(reg_model)} 的得分: {map_score:.4f}")
+        return reg_model, map_score
 
     # ---------------------- 辅助函数 ----------------------
 
@@ -975,12 +949,13 @@ def get_skmodels(model_type="auto"):
     返回：
         GATRegressor模型列表
     """
-    hidden_dim = [16]
-    alpha_values = [0.0001]
-    loss = ["MSE", "WeightedMSE"]
-    lr_list = [0.005]
+    hidden_dim = [16, 32, 64]
+    alpha_values = [0.01]
+    loss = ["WeightedMSE"]
+    lr_list = [0.001]
     penalty = ["l2"]
-    dropout_rates = [0.3]
+    dropout_rates = [0.3, 0.4]
+    gat_heads = [1, 2]
 
     # 根据模型类型配置heads和use_self_loops_modes参数
     if model_type == "mlp":
@@ -989,15 +964,15 @@ def get_skmodels(model_type="auto"):
         use_self_loops_modes = [False]  # 这个参数对MLP没有影响
     elif model_type == "gat":
         # 只使用GAT模型
-        heads = [2, 4]
+        heads = gat_heads
         use_self_loops_modes = [False]
     elif model_type == "gat_degenerative":
         # 只使用GAT退化模型
-        heads = [2, 4]
+        heads = gat_heads
         use_self_loops_modes = [True]
     else:  # "auto"或其他值
         # 使用所有类型的模型
-        heads = [None, 2, 4]
+        heads = [None] + gat_heads
         use_self_loops_modes = [False, True]
 
     models = [
@@ -1054,7 +1029,6 @@ def process(
     fold_dependency_testing: Dict[int, pd.DataFrame],
     fold_dependency_training: Dict[int, pd.DataFrame],
     file_prefix: str,
-    mode="train",
 ):
     """
     主处理函数
@@ -1067,7 +1041,6 @@ def process(
         fold_dependency_testing: 测试依赖数据
         fold_dependency_training: 训练依赖数据
         file_prefix: 文件前缀
-        mode: 训练时，保存日志。预测时，不保存日志
     """
     results_list = []
 
@@ -1089,57 +1062,6 @@ def process(
 
     all_results_df = pd.concat(results_list)
     all_results_df.reset_index(level=1, drop=True, inplace=True)
-
-    if mode == "predict":
-        return {
-            "name": ptemplate.name,
-            "results": calculate_metric_results(all_results_df),
-        }
-
-    results_timestamp = time.strftime("%Y%m%d%H%M%S")
-    result_dir = f"{file_prefix}_{ptemplate.model_type}_{results_timestamp}"
-    os.makedirs(result_dir, exist_ok=True)
-
-    # 保存训练时间统计
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_training_time.json"), "w"
-    ) as time_file:
-        json.dump(ptemplate.training_time_stats, time_file, indent=4)
-
-    # 保存权重方法评估日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_prescoring_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.prescoring_log, file, indent=4)
-
-    # 保存回归模型评估日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_regression_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.regression_log, file, indent=4)
-
-    # 保存预测结果日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_prediction_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.prediction_log, file, indent=4)
-
-    # 保存最佳权重方法日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_best_prescoring_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.best_prescoring_log, file, indent=4)
-
-    # 保存最佳模型日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_best_regression_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.best_regression_log, file, indent=4)
-
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_cv_regression_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.cv_regression_log, file, indent=4)
 
     return {
         "name": ptemplate.name,
@@ -1244,29 +1166,6 @@ def fold_check(
     return method.__name__, (weights, evaluate_fold(df, Y))
 
 
-def evaluate_fold(df: pd.DataFrame, Y: np.ndarray) -> float:
-    """
-    评估预测结果的MAP指标
-
-    参数：
-        df: 待评估数据集（需包含used_in_fix列）
-        Y: 预测得分向量
-
-    返回：
-        m_a_p: 平均精度均值（Mean Average Precision）
-
-    流程：
-        1. 构建结果数据框（含预测得分）
-        2. 确定最小修复得分阈值（实际修复样本的最低得分）
-        3. 生成候选集（预测得分≥阈值的样本）
-        4. 调用calculate_metric_results计算指标
-    """
-    r = df[["used_in_fix"]].copy(deep=False)
-    r["result"] = Y
-    _, m_a_p, _, _ = calculate_metric_results(r)
-    return m_a_p
-
-
 def normal_score(
     df: pd.DataFrame, columns: List[str], weights: np.ndarray
 ) -> np.ndarray:
@@ -1313,8 +1212,10 @@ def main():
         fold_dependency_training,
     ) = load(f"../joblib_memmap_{file_prefix}_graph/data_memmap", mmap_mode="r")
 
+    ptemplate = Adaptive_Process()
+
     result = process(
-        Adaptive_Process(),
+        ptemplate,
         fold_number,
         fold_testing,
         fold_training,
@@ -1322,6 +1223,58 @@ def main():
         fold_dependency_training,
         file_prefix,
     )
+
+    results_timestamp = time.strftime("%Y%m%d%H%M%S")
+    result_dir = f"{file_prefix}_{ptemplate.model_type}_{results_timestamp}"
+    os.makedirs(result_dir, exist_ok=True)
+
+    # 保存训练时间统计
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_training_time.json"), "w"
+    ) as time_file:
+        json.dump(ptemplate.training_time_stats, time_file, indent=4)
+
+    # 保存权重方法评估日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_prescoring_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.prescoring_log, file, indent=4)
+
+    # 保存回归模型评估日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_regression_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.regression_log, file, indent=4)
+
+    # 保存预测结果日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_prediction_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.prediction_log, file, indent=4)
+
+    # 保存最佳权重方法日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_best_prescoring_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.best_prescoring_log, file, indent=4)
+
+    # 保存最佳模型日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_best_regression_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.best_regression_log, file, indent=4)
+
+    # 保存模型训练结果指标
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_metrics_results.json"), "w"
+    ) as metrics_file:
+        # 将结果转换为可JSON序列化的格式
+        metrics_data = {
+            "accuracy_at_k": {str(k): v for k, v in result["results"][0].items()},
+            "mean_average_precision": float(result["results"][1]),
+            "mean_reciprocal_rank": float(result["results"][2]),
+        }
+        json.dump(metrics_data, metrics_file, indent=4)
 
     print("======Results======")
     print_metrics(*result["results"])
