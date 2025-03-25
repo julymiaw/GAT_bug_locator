@@ -98,16 +98,6 @@ class AdaptiveGATEvaluator:
         except Exception as e:
             print(f"✗ 无法加载预测日志: {e}")
 
-        # 交叉验证日志
-        # try:
-        #     with open(
-        #         os.path.join(self.log_dir, "Adaptive_cv_regression_log.json"), "r"
-        #     ) as f:
-        #         self.cv_regression_log = json.load(f)
-        #     print("✓ 成功加载交叉验证日志")
-        # except Exception as e:
-        #     print(f"✗ 无法加载交叉验证日志: {e}")
-
         # 最佳回归模型日志
         try:
             with open(
@@ -133,7 +123,38 @@ class AdaptiveGATEvaluator:
         # 创建包含所有模型性能数据的DataFrame
         models_data = []
 
+        # 添加权重法的结果
+        weights_method_results = {}
+        weights_method_train_scores = {}
+
+        # 获取权重法的预测分数
+        for fold_num in self.prediction_log.keys():
+            if "weights_method" in self.prediction_log[fold_num]:
+                weights_method_results[fold_num] = self.prediction_log[fold_num][
+                    "weights_method"
+                ]
+
+        # 获取权重法的训练分数
+        for fold_num in self.best_prescoring.keys():
+            best_method = self.best_prescoring[fold_num]
+            if best_method in self.prescoring_log.get(fold_num, {}):
+                weights_method_train_scores[fold_num] = self.prescoring_log[fold_num][
+                    best_method
+                ]
+
         for fold_num in self.regression_log.keys():
+            # 添加权重法的结果
+            models_data.append(
+                {
+                    "fold": fold_num,
+                    "model_name": "weights_method",
+                    "train_score": weights_method_train_scores.get(fold_num),
+                    "test_score": weights_method_results.get(fold_num),
+                    "is_best": False,
+                    "model_category": "baseline_weights",
+                }
+            )
+
             for model_name, train_score in self.regression_log[fold_num].items():
                 # 获取测试分数
                 test_score = self.prediction_log.get(fold_num, {}).get(model_name, None)
@@ -243,6 +264,7 @@ class AdaptiveGATEvaluator:
         """分析不同参数对模型性能的影响"""
         # 要分析的参数列表
         params_to_analyze = [
+            "heads",
             "loss_type",
             "hidden_dim",
             "penalty",
@@ -258,22 +280,24 @@ class AdaptiveGATEvaluator:
         # 分析每个参数
         param_impact = {}
 
+        nn_models_df = self.model_performance_df[
+            self.model_performance_df["model_category"] != "baseline_weights"
+        ]
+
         for param in params_to_analyze:
-            if param not in self.model_performance_df.columns:
+            if param not in nn_models_df.columns:
                 continue
 
-            unique_values = self.model_performance_df[param].unique()
+            unique_values = nn_models_df[param].unique()
             if len(unique_values) <= 1:
                 continue
 
             # 计算每个参数值的平均性能
             impact_data = []
-            unique_values = self.model_performance_df[param].unique()
+            unique_values = nn_models_df[param].unique()
 
             for value in unique_values:
-                subset = self.model_performance_df[
-                    self.model_performance_df[param] == value
-                ]
+                subset = nn_models_df[nn_models_df[param] == value]
 
                 impact_data.append(
                     {
@@ -549,7 +573,6 @@ class AdaptiveGATEvaluator:
                     )
 
         # 添加辅助元素
-        plt.grid(True, linestyle="--", alpha=0.7)
         plt.xlabel("回归阶段得分", fontsize=12)
         plt.ylabel("测试阶段得分", fontsize=12)
         plt.title("不同类别模型性能对比", fontsize=14)
@@ -612,9 +635,61 @@ class AdaptiveGATEvaluator:
         best_model_category = best_models["model_category"].iloc[0]
 
         # 按模型类别分组计算最佳性能
+        fold_category_performance = (
+            self.model_performance_df.groupby(["fold", "model_category"])["test_score"]
+            .max()
+            .reset_index()
+        )
+
+        # 辅助函数：判断一个模型类别是否在所有fold中都优于另一个类别
+        def is_better_in_all_folds(category1, category2):
+            """判断category1是否在所有fold中都优于category2"""
+            for fold in fold_category_performance["fold"].unique():
+                # 获取当前fold中两种类别的最高得分
+                cat1_score = fold_category_performance[
+                    (fold_category_performance["fold"] == fold)
+                    & (fold_category_performance["model_category"] == category1)
+                ]["test_score"]
+
+                cat2_score = fold_category_performance[
+                    (fold_category_performance["fold"] == fold)
+                    & (fold_category_performance["model_category"] == category2)
+                ]["test_score"]
+
+                # 如果任一类别在该fold中没有数据，或cat1不优于cat2，则返回False
+                if (
+                    cat1_score.empty
+                    or cat2_score.empty
+                    or cat1_score.iloc[0] <= cat2_score.iloc[0]
+                ):
+                    return False
+
+            return True
+
+        # 辅助函数：比较两个模型类别并返回结论
+        def compare_categories(category, name):
+            """比较两个模型类别，返回比较结论"""
+            if category not in fold_category_performance["model_category"].values:
+                return f"未比较GAT模型与{name}"
+
+            if is_better_in_all_folds("gat_realedge", category):
+                return f"GAT模型表现优于{name}"
+            elif is_better_in_all_folds(category, "gat_realedge"):
+                return f"{name}表现优于GAT模型"
+            else:
+                return f"GAT模型与{name}表现无法确定明显优劣"
+
+        # 执行各种比较
+        findings = [
+            compare_categories("baseline_weights", "权重法"),
+            compare_categories("gat_selfloop", "仅自环GAT模型"),
+            compare_categories("baseline_mlp", "MLP模型"),
+        ]
+
+        # 整体性能统计
         category_performance = (
             self.model_performance_df.groupby("model_category")["test_score"]
-            .agg(["max"])
+            .agg(["max", "mean"])
             .reset_index()
         )
 
@@ -628,43 +703,13 @@ class AdaptiveGATEvaluator:
                 "最佳模型测试得分": best_models["test_score"].tolist(),
                 "最佳模型类型": {
                     "baseline_mlp": "基线MLP模型",
+                    "baseline_weights": "权重线性组合模型",
                     "gat_realedge": "GAT模型",
                     "gat_selfloop": "仅自环GAT模型",
                 }.get(best_model_category, "未知类型"),
             },
             "模型类别性能": category_performance.to_dict(orient="records"),
-            "主要发现": [
-                (
-                    (
-                        "仅自环GAT模型优于GAT模型"
-                        if category_performance[
-                            category_performance["model_category"] == "gat_selfloop"
-                        ]["max"].iloc[0]
-                        > category_performance[
-                            category_performance["model_category"] == "gat_realedge"
-                        ]["max"].iloc[0]
-                        else "GAT模型优于仅自环GAT模型"
-                    )
-                    if "gat_selfloop" in category_performance["model_category"].values
-                    and "gat_realedge" in category_performance["model_category"].values
-                    else "未比较自环与真实边"
-                ),
-                (
-                    (
-                        "MLP模型表现优于GAT模型"
-                        if category_performance[
-                            category_performance["model_category"] == "baseline_mlp"
-                        ]["max"].iloc[0]
-                        > category_performance[
-                            category_performance["model_category"] == "gat_realedge"
-                        ]["max"].iloc[0]
-                        else "GAT模型表现优于MLP模型"
-                    )
-                    if "baseline_mlp" in category_performance["model_category"].values
-                    and "gat_realedge" in category_performance["model_category"].values
-                    else "未比较GAT与MLP"
-                ),
-            ],
+            "主要发现": findings,
         }
 
         # 保存最终报告

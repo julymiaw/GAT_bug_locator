@@ -17,3 +17,5 @@ joblib_memmap_*
 analysis_results
 *.json
 features/graph/*_dataset_analysis/*.png
+*.err
+*.out

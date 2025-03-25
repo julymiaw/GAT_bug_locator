@@ -23,12 +23,12 @@
 import numpy as np
 import pandas as pd
 import sys
-from typing import Dict, List, Tuple, Any, Union
+from typing import Dict, List, Tuple, Union
 
 
 def calculate_metrics(
-    verification_df: pd.DataFrame, k_range=range(1, 21)
-) -> Tuple[Dict[int, float], float, float]:
+    verification_df: pd.DataFrame, k_range=range(1, 21), metric_type=None
+) -> Union[Dict[int, float], float, Tuple[Dict[int, float], float, float]]:
     """
     计算信息检索评估指标: Accuracy@k, MAP和MRR
 
@@ -39,17 +39,21 @@ def calculate_metrics(
             - 多级索引: (bug_id, file_sha)
             - 至少包含'result'和'used_in_fix'两列
         k_range: 要计算Accuracy@k的k值范围，默认为1到20
+        metric_type: 指定要计算的指标类型，可选值:
+            - None: 计算所有指标
+            - "ACCURACY": 只计算Accuracy@k
+            - "MAP": 只计算MAP
+            - "MRR": 只计算MRR
 
     返回:
-        Tuple[Dict[int, float], float, float]: 包含三个指标的元组:
-            - accuracy_at_k: 字典，键为k值，值为对应的Accuracy@k
-            - mean_average_precision: MAP指标值
-            - mean_reciprocal_rank: MRR指标值
+        根据metric_type参数，返回不同的结果:
+            - None: Tuple[Dict[int, float], float, float]，包含所有三个指标
+            - "ACCURACY": Dict[int, float]，包含Accuracy@k的字典
+            - "MAP": float，MAP指标值
+            - "MRR": float，MRR指标值
     """
-    average_precision_per_bug_report = []  # 存储每个bug报告的平均精确率
-    reciprocal_ranks = []  # 存储每个bug报告的倒数排名
-    accuracy_at_k = dict.fromkeys(k_range, 0)  # 初始化各k值的accuracy计数器
-    bug_report_number = 0  # bug报告总数
+    # 收集每个bug报告的数据
+    bug_reports_data = []
 
     # 按bug报告ID分组计算
     for bug_report, bug_report_files_dataframe in verification_df.groupby(
@@ -88,25 +92,51 @@ def calculate_metrics(
         unique_results = sorted_df["result"].unique().tolist()
         unique_results.sort()
 
-        # 计算每个修复文件位置的精确率
-        precision_at_k = []
-        for fk in large_k_p:
-            k = int(fk)  # 当前修复文件的位置
-            k_largest = unique_results[-k:]  # 前k个得分最高的阈值
+        # 存储当前bug报告的处理数据
+        bug_data = {
+            "sorted_df": sorted_df,
+            "large_k_p": large_k_p,
+            "unique_results": unique_results,
+        }
+        bug_reports_data.append(bug_data)
 
-            # 获取得分不低于阈值的文件
-            largest_at_k = sorted_df[sorted_df["result"] >= min(k_largest)]
-            # 计算前k个结果中正确文件数量
-            real_fixes_at_k = (largest_at_k["used_in_fix"] == 1.0).sum()
+        # 释放内存
+        del bug_report, bug_report_files_dataframe
 
-            # 精确率 = 正确文件数 / k
-            p = float(real_fixes_at_k) / float(k)
-            precision_at_k.append(p)
+    # 根据指定的指标类型计算结果
+    if metric_type == "ACCURACY":
+        return _calculate_accuracy_at_k(bug_reports_data, k_range)
+    elif metric_type == "MAP":
+        return _calculate_map(bug_reports_data)
+    elif metric_type == "MRR":
+        return _calculate_mrr(bug_reports_data)
+    else:
+        # 计算所有指标
+        accuracy_at_k = _calculate_accuracy_at_k(bug_reports_data, k_range)
+        mean_average_precision = _calculate_map(bug_reports_data)
+        mean_reciprocal_rank = _calculate_mrr(bug_reports_data)
+        return accuracy_at_k, mean_average_precision, mean_reciprocal_rank
 
-        # 计算平均精确率 (Average Precision)
-        # AP = 所有修复文件位置的精确率之和 / 修复文件数量
-        average_precision = pd.Series(precision_at_k).mean()
-        average_precision_per_bug_report.append(average_precision)
+
+def _calculate_accuracy_at_k(
+    bug_reports_data: List[Dict], k_range=range(1, 21)
+) -> Dict[int, float]:
+    """
+    计算Accuracy@k指标
+
+    参数:
+        bug_reports_data: 预处理后的bug报告数据列表
+        k_range: 要计算Accuracy@k的k值范围
+
+    返回:
+        Dict[int, float]: 各k值的Accuracy@k
+    """
+    accuracy_at_k = dict.fromkeys(k_range, 0)  # 初始化各k值的accuracy计数器
+    bug_report_number = len(bug_reports_data)  # bug报告总数
+
+    for bug_data in bug_reports_data:
+        sorted_df = bug_data["sorted_df"]
+        unique_results = bug_data["unique_results"]
 
         # 计算各k值的Accuracy@k
         for k in k_range:
@@ -127,6 +157,76 @@ def calculate_metrics(
             if real_fixes_at_k >= 1:
                 accuracy_at_k[k] += 1
 
+    # 计算各k值的Accuracy@k百分比
+    for k in k_range:
+        accuracy_at_k[k] = (
+            accuracy_at_k[k] / bug_report_number if bug_report_number > 0 else 0.0
+        )
+
+    return accuracy_at_k
+
+
+def _calculate_map(bug_reports_data: List[Dict]) -> float:
+    """
+    计算MAP(Mean Average Precision)指标
+
+    参数:
+        bug_reports_data: 预处理后的bug报告数据列表
+
+    返回:
+        float: MAP指标值
+    """
+    average_precision_per_bug_report = []  # 存储每个bug报告的平均精确率
+
+    for bug_data in bug_reports_data:
+        sorted_df = bug_data["sorted_df"]
+        large_k_p = bug_data["large_k_p"]
+        unique_results = bug_data["unique_results"]
+
+        # 计算每个修复文件位置的精确率
+        precision_at_k = []
+        for fk in large_k_p:
+            k = int(fk)  # 当前修复文件的位置
+            k_largest = unique_results[-k:]  # 前k个得分最高的阈值
+
+            # 获取得分不低于阈值的文件
+            largest_at_k = sorted_df[sorted_df["result"] >= min(k_largest)]
+            # 计算前k个结果中正确文件数量
+            real_fixes_at_k = (largest_at_k["used_in_fix"] == 1.0).sum()
+
+            # 精确率 = 正确文件数 / k
+            p = float(real_fixes_at_k) / float(k)
+            precision_at_k.append(p)
+
+        # 计算平均精确率 (Average Precision)
+        # AP = 所有修复文件位置的精确率之和 / 修复文件数量
+        if precision_at_k:  # 确保列表非空
+            average_precision = pd.Series(precision_at_k).mean()
+            average_precision_per_bug_report.append(average_precision)
+
+    # MAP = 所有bug报告AP的均值
+    return (
+        pd.Series(average_precision_per_bug_report).mean()
+        if average_precision_per_bug_report
+        else 0.0
+    )
+
+
+def _calculate_mrr(bug_reports_data: List[Dict]) -> float:
+    """
+    计算MRR(Mean Reciprocal Rank)指标
+
+    参数:
+        bug_reports_data: 预处理后的bug报告数据列表
+
+    返回:
+        float: MRR指标值
+    """
+    reciprocal_ranks = []  # 存储每个bug报告的倒数排名
+
+    for bug_data in bug_reports_data:
+        sorted_df = bug_data["sorted_df"]
+
         # 计算倒数排名 (Reciprocal Rank)
         # 找到第一个正确文件的索引
         indexes_of_fixes = np.flatnonzero(sorted_df["used_in_fix"] == 1.0)
@@ -140,53 +240,48 @@ def calculate_metrics(
             reciprocal_rank = 1.0 / (first_index + 1)
             reciprocal_ranks.append(reciprocal_rank)
 
-        # bug报告数+1
-        bug_report_number += 1
-
-        # 释放内存
-        del bug_report, bug_report_files_dataframe
-
-    # 计算全局平均值
-    # MAP = 所有bug报告AP的均值
-    mean_average_precision = pd.Series(average_precision_per_bug_report).mean()
     # MRR = 所有bug报告RR的均值
-    mean_reciprocal_rank = pd.Series(reciprocal_ranks).mean()
-
-    # 计算各k值的Accuracy@k百分比
-    for k in k_range:
-        accuracy_at_k[k] = accuracy_at_k[k] / bug_report_number
-
-    return accuracy_at_k, mean_average_precision, mean_reciprocal_rank
+    return pd.Series(reciprocal_ranks).mean() if reciprocal_ranks else 0.0
 
 
 def calculate_metric_results(
-    df: pd.DataFrame, k_range=range(1, 21)
-) -> Tuple[Dict[int, float], float, float, range]:
+    df: pd.DataFrame, k_range=range(1, 21), metric_type=None
+) -> Union[Dict[int, float], float, Tuple[Dict[int, float], float, float, range]]:
     """
-    计算并返回所有评估指标结果
+    计算并返回所有评估指标结果或指定的单个指标
 
     参数:
         df: 包含预测结果的DataFrame
         k_range: 要计算Accuracy@k的k值范围
+        metric_type: 指定要计算的指标类型，可选值:
+            - None: 计算所有指标
+            - "ACCURACY": 只计算Accuracy@k
+            - "MAP": 只计算MAP
+            - "MRR": 只计算MRR
 
     返回:
-        Tuple: 包含以下元素的元组:
-            - all_data_accuracy_at_k: 各k值的Accuracy@k
-            - all_data_mean_average_precision: MAP值
-            - all_data_mean_reciprocal_rank: MRR值
-            - k_range: 使用的k值范围
+        根据metric_type参数，返回不同的结果:
+            - None: Tuple包含所有指标和k_range
+            - "ACCURACY": Dict[int, float]，包含Accuracy@k的字典
+            - "MAP": float，MAP指标值
+            - "MRR": float，MRR指标值
     """
-    (
-        all_data_accuracy_at_k,
-        all_data_mean_average_precision,
-        all_data_mean_reciprocal_rank,
-    ) = calculate_metrics(df, k_range)
-    return (
-        all_data_accuracy_at_k,
-        all_data_mean_average_precision,
-        all_data_mean_reciprocal_rank,
-        k_range,
-    )
+    result = calculate_metrics(df, k_range, metric_type)
+
+    if metric_type is None:
+        (
+            all_data_accuracy_at_k,
+            all_data_mean_average_precision,
+            all_data_mean_reciprocal_rank,
+        ) = result
+        return (
+            all_data_accuracy_at_k,
+            all_data_mean_average_precision,
+            all_data_mean_reciprocal_rank,
+            k_range,
+        )
+    else:
+        return result
 
 
 def print_metrics(

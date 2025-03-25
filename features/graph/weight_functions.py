@@ -288,31 +288,6 @@ def eval_weights(
     return m_name, (weights, evaluate_fold(df, Y))
 
 
-def fold_check(
-    method: Callable[[pd.DataFrame, List[str]], np.ndarray],
-    df: pd.DataFrame,
-    columns: List[str],
-) -> Tuple[str, Tuple[np.ndarray, float]]:
-    """
-    单折权重评估函数（非交叉验证模式）
-
-    参数：
-        method (function): 权重计算方法
-        df (pd.DataFrame): 完整训练数据
-        columns (list): 特征列名列表
-
-    返回：
-        tuple: (方法名称, (权重向量, MAP得分))
-
-    说明：
-        - 当use_prescoring_cross_validation=False时使用
-        - 直接在整个数据集上计算和评估
-    """
-    weights = method(df, columns)
-    Y = np.dot(df[columns], weights)
-    return method.__name__, (weights, evaluate_fold(df, Y))
-
-
 def evaluate_fold(df: pd.DataFrame, Y: np.ndarray) -> float:
     """
     评估预测结果的MAP指标
@@ -332,11 +307,48 @@ def evaluate_fold(df: pd.DataFrame, Y: np.ndarray) -> float:
     """
     r = df[["used_in_fix"]].copy(deep=False)
     r["result"] = Y
-    _, m_a_p, _, _ = calculate_metric_results(r)
+    m_a_p = calculate_metric_results(r, metric_type="MAP")
     return m_a_p
 
 
 # endregion
+
+
+def get_weight_method_by_name(
+    name: str,
+) -> Callable[[pd.DataFrame, List[str]], np.ndarray]:
+    """
+    根据方法名称获取权重计算函数
+
+    参数：
+        name: 权重方法名称，可以是完整名称（如'weights_chi2'）或简写（如'chi2'）
+
+    返回：
+        Callable: 对应的权重计算函数
+
+    异常：
+        ValueError: 当指定名称的方法不存在时
+    """
+    # 获取所有权重方法
+    all_methods = get_weights_methods()
+
+    # 自动添加'weights_'前缀（如果没有）
+    if not name.startswith("weights_"):
+        full_name = f"weights_{name}"
+    else:
+        full_name = name
+
+    # 查找匹配的方法
+    for method in all_methods:
+        if method.__name__ == full_name:
+            return method
+
+    # 如果没有找到，抛出异常
+    available_methods = [m.__name__ for m in all_methods]
+    short_names = [m.__name__.replace("weights_", "") for m in all_methods]
+    raise ValueError(
+        f"未找到名为 '{name}' 的权重计算方法。\n可用方法: {', '.join(available_methods)}\n或简写: {', '.join(short_names)}"
+    )
 
 
 def get_weights_methods():

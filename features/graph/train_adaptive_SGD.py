@@ -26,7 +26,7 @@ from skopt import load
 from metrics import calculate_metric_results, print_metrics
 from train_utils import eprint
 
-from weight_functions import get_weights_methods
+from weight_functions import eval_weights, get_weights_methods, weights_on_df
 
 node_feature_columns = ["f" + str(i) for i in range(1, 20)]
 
@@ -600,53 +600,6 @@ def process(
     }
 
 
-def weights_on_df(
-    method: Callable[[pd.DataFrame, List[str]], np.ndarray],
-    df: pd.DataFrame,
-    columns: List[str],
-):
-    """
-    单权重方法计算包装函数
-
-    参数：
-        method: 权重计算方法
-        df: 当前折训练数据
-        columns: 特征列名列表
-
-    返回：
-        tuple: (方法名称, 权重向量)
-
-    说明：
-        - 用于并行计算任务包装
-        - 调用具体权重计算方法并返回标准化结果
-    """
-    weights = method(df, columns)
-    return method.__name__, weights
-
-
-def eval_weights(
-    m_name: str, weights: np.ndarray, df: pd.DataFrame, columns: List[str]
-) -> Tuple[str, Tuple[np.ndarray, float]]:
-    """
-    权重评估函数（验证阶段）
-
-    参数：
-        m_name: 权重方法名称
-        weights: 已计算的权重向量
-        df: 验证集数据
-        columns: 特征列名列表
-
-    返回：
-        tuple: (方法名称, (权重向量, MAP得分))
-
-    流程：
-        1. 计算验证集预测得分：X * weights
-        2. 调用evaluate_fold计算MAP指标
-    """
-    Y = np.dot(df[columns], weights)
-    return m_name, (weights, evaluate_fold(df, Y))
-
-
 def fold_check(
     method: Callable[[pd.DataFrame, List[str]], np.ndarray],
     df: pd.DataFrame,
@@ -691,7 +644,7 @@ def evaluate_fold(df: pd.DataFrame, Y: np.ndarray) -> float:
     """
     r = df[["used_in_fix"]].copy(deep=False)
     r["result"] = Y
-    _, m_a_p, _, _ = calculate_metric_results(r)
+    m_a_p = calculate_metric_results(r, metric_type="MAP")
     return m_a_p
 
 

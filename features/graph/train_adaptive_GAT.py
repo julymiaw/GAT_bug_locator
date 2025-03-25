@@ -25,7 +25,7 @@ from skopt import load
 import torch
 import torch.nn as nn
 from torch_geometric.nn import GATConv
-from torch.optim import Adam
+from torch.optim import AdamW
 import torch.nn.functional as F
 from torch_geometric.data import Data
 
@@ -33,7 +33,12 @@ from metrics import calculate_metric_results, print_metrics
 from train_utils import eprint
 from ranking_losses import WeightedRankMSELoss
 
-from weight_functions import evaluate_fold, get_weights_methods
+from weight_functions import (
+    eval_weights,
+    evaluate_fold,
+    get_weights_methods,
+    weights_on_df,
+)
 
 node_feature_columns = ["f" + str(i) for i in range(1, 20)]
 edge_feature_columns = ["t" + str(i) for i in range(1, 13)]
@@ -211,7 +216,7 @@ class GATRegressor:
             shuffle: 是否在每轮训练后打乱数据
             epsilon: Huber损失中的epsilon参数
             random_state: 随机种子
-            lr: Adam优化器的学习率
+            lr: AdamW优化器的学习率
             warm_start: 是否使用之前的解作为初始化
             n_iter_no_change: 用于提前停止的无改进迭代次数
         """
@@ -342,25 +347,6 @@ class GATRegressor:
 
         return data_list
 
-    def _get_reg_loss(self, model):
-        """计算正则化损失"""
-        reg_loss = 0
-        if self.penalty is None:
-            return 0
-
-        for name, param in model.named_parameters():
-            if "weight" in name:  # 只对权重进行正则化，不包括偏置
-                if self.penalty == "l2":
-                    reg_loss += torch.sum(param**2)
-                elif self.penalty == "l1":
-                    reg_loss += torch.sum(torch.abs(param))
-                elif self.penalty == "elasticnet":
-                    l1 = torch.sum(torch.abs(param))
-                    l2 = torch.sum(param**2)
-                    reg_loss += self.l1_ratio * l1 + (1 - self.l1_ratio) * l2
-
-        return self.alpha * reg_loss
-
     def _get_criterion(self):
         """根据loss参数选择损失函数"""
         if self.loss == "MSE":
@@ -413,11 +399,11 @@ class GATRegressor:
 
         # 创建优化器
         if self.penalty == "l2":
-            self.optimizer = Adam(
+            self.optimizer = AdamW(
                 self.model.parameters(), lr=self.lr, weight_decay=self.alpha
             )
         else:
-            self.optimizer = Adam(self.model.parameters(), lr=self.lr)
+            self.optimizer = AdamW(self.model.parameters(), lr=self.lr)
 
         # 训练循环
         self.model.train()
@@ -451,10 +437,6 @@ class GATRegressor:
                 # 计算损失
                 loss = self.criterion(out, data.y)
 
-                # 仅当非L2正则化或无正则化时添加手动正则化
-                if self.penalty != "l2" and self.penalty is not None:
-                    loss += self._get_reg_loss(self.model)
-
                 # 反向传播
                 loss.backward()
                 total_loss += loss.item()
@@ -482,9 +464,6 @@ class GATRegressor:
                 self.n_iter_no_change is not None
                 and no_improvement_count >= self.n_iter_no_change
             ):
-                # eprint(
-                #     f"{str(self)}: Converged after {epoch+1} epochs. Loss: {best_loss}"
-                # )
                 break
 
         # 恢复最佳权重
@@ -558,7 +537,6 @@ class Adaptive_Process(object):
                 "auto": 自动选择性能最佳的模型（默认）
                 "mlp": 只使用MLP模型（heads=None）
                 "gat": 只使用GAT模型（heads=数字，use_self_loops_only=False）
-                "gat_degenerative": 只使用GAT退化模型（heads=数字，use_self_loops_only=True）
         """
         # region 算法组件配置
         # 特征权重计算方法列表（统计检验/树模型/降维方法等）
@@ -566,7 +544,7 @@ class Adaptive_Process(object):
 
         # 指定模型类型
         self.model_type = model_type
-        if model_type not in ["auto", "mlp", "gat", "gat_degenerative"]:
+        if model_type not in ["auto", "mlp", "gat"]:
             eprint(f"警告: 未知的模型类型 '{model_type}'，使用 'auto' 模式")
             self.model_type = "auto"
 
@@ -575,9 +553,7 @@ class Adaptive_Process(object):
         self.reg_models.extend(get_skmodels(self.model_type))
 
         # 评分方法（标准评分）
-        self.score_method: Callable[
-            [pd.DataFrame, List[str], np.ndarray], np.ndarray
-        ] = normal_score
+        self.score_method = normal_score
         # endregion
 
         # region 运行时状态存储
@@ -593,7 +569,7 @@ class Adaptive_Process(object):
         self.use_prescoring_always = False  # 是否始终使用预评分权重
         self.use_reg_model_always = True  # 是否强制使用回归模型
         self.use_prescoring_cross_validation = True  # 权重计算阶段交叉验证开关
-        self.use_training_cross_validation = True
+        self.use_training_cross_validation = False
         self.cross_validation_fold_number = 5  # 交叉验证折数
         # endregion
 
@@ -748,7 +724,11 @@ class Adaptive_Process(object):
 
             self.all_reg_models[current_model_name] = current_reg_model
             self.regression_log[fold_num][current_model_name] = current_score
-            if current_score > self.reg_model_score:
+            # 基线MLP模型往往能取得较高的训练集得分，但泛化能力较差，因此不作为最佳模型
+            if (
+                current_score > self.reg_model_score
+                and current_reg_model.heads is not None
+            ):
                 self.reg_model = current_reg_model
                 self.reg_model_name = current_model_name
                 self.reg_model_score = current_score
@@ -919,7 +899,7 @@ class Adaptive_Process(object):
                 val_pred = fold_model.predict(val_df, val_dep_df)
                 val_result = val_df[["used_in_fix"]].copy(deep=False)
                 val_result["result"] = val_pred
-                _, val_map, _, _ = calculate_metric_results(val_result)
+                val_map = calculate_metric_results(val_result, metric_type="MAP")
 
                 cv_scores.append(val_map)
 
@@ -944,36 +924,30 @@ def get_skmodels(model_type="auto"):
             "auto": 返回所有类型的模型（默认）
             "mlp": 只返回MLP模型（heads=None）
             "gat": 只返回GAT模型（heads=数字，use_self_loops_only=False）
-            "gat_degenerative": 只返回GAT退化模型（heads=数字，use_self_loops_only=True）
 
     返回：
         GATRegressor模型列表
     """
-    hidden_dim = [16, 32, 64]
-    alpha_values = [0.01]
+    # 数据集大小不同，最优的超参数可能不同
+    hidden_dim = [16, 32]
+    alpha_values = [1e-2]
     loss = ["WeightedMSE"]
     lr_list = [0.001]
-    penalty = ["l2"]
+    penalty = ["l2", None]
     dropout_rates = [0.3, 0.4]
     gat_heads = [1, 2]
+    use_self_loops_modes = [False, True]
 
     # 根据模型类型配置heads和use_self_loops_modes参数
     if model_type == "mlp":
         # 只使用MLP模型
         heads = [None]
-        use_self_loops_modes = [False]  # 这个参数对MLP没有影响
     elif model_type == "gat":
         # 只使用GAT模型
         heads = gat_heads
-        use_self_loops_modes = [False]
-    elif model_type == "gat_degenerative":
-        # 只使用GAT退化模型
-        heads = gat_heads
-        use_self_loops_modes = [True]
     else:  # "auto"或其他值
         # 使用所有类型的模型
         heads = [None] + gat_heads
-        use_self_loops_modes = [False, True]
 
     models = [
         GATRegressor(
@@ -1028,7 +1002,6 @@ def process(
     fold_training: Dict[int, pd.DataFrame],
     fold_dependency_testing: Dict[int, pd.DataFrame],
     fold_dependency_training: Dict[int, pd.DataFrame],
-    file_prefix: str,
 ):
     """
     主处理函数
@@ -1040,7 +1013,6 @@ def process(
         fold_training: 训练数据
         fold_dependency_testing: 测试依赖数据
         fold_dependency_training: 训练依赖数据
-        file_prefix: 文件前缀
     """
     results_list = []
 
@@ -1092,53 +1064,6 @@ def clone_regressor(reg_model):
         n_iter_no_change=reg_model.n_iter_no_change,
         use_self_loops_only=reg_model.use_self_loops_only,
     )
-
-
-def weights_on_df(
-    method: Callable[[pd.DataFrame, List[str]], np.ndarray],
-    df: pd.DataFrame,
-    columns: List[str],
-):
-    """
-    单权重方法计算包装函数
-
-    参数：
-        method: 权重计算方法
-        df: 当前折训练数据
-        columns: 特征列名列表
-
-    返回：
-        tuple: (方法名称, 权重向量)
-
-    说明：
-        - 用于并行计算任务包装
-        - 调用具体权重计算方法并返回标准化结果
-    """
-    weights = method(df, columns)
-    return method.__name__, weights
-
-
-def eval_weights(
-    m_name: str, weights: np.ndarray, df: pd.DataFrame, columns: List[str]
-) -> Tuple[str, Tuple[np.ndarray, float]]:
-    """
-    权重评估函数（验证阶段）
-
-    参数：
-        m_name: 权重方法名称
-        weights: 已计算的权重向量
-        df: 验证集数据
-        columns: 特征列名列表
-
-    返回：
-        tuple: (方法名称, (权重向量, MAP得分))
-
-    流程：
-        1. 计算验证集预测得分：X * weights
-        2. 调用evaluate_fold计算MAP指标
-    """
-    Y = np.dot(df[columns], weights)
-    return m_name, (weights, evaluate_fold(df, Y))
 
 
 def fold_check(
@@ -1221,7 +1146,6 @@ def main():
         fold_training,
         fold_dependency_testing,
         fold_dependency_training,
-        file_prefix,
     )
 
     results_timestamp = time.strftime("%Y%m%d%H%M%S")
