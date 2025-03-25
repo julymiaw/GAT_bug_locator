@@ -15,5 +15,5 @@ features/jdt
 *.exe
 joblib_memmap_*
 analysis_results
-tomcat_dataset_analysis/*.png
 *.json
+features/graph/*_dataset_analysis/*.png
