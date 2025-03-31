@@ -26,7 +26,12 @@ from skopt import load
 from metrics import calculate_metric_results, print_metrics
 from train_utils import eprint
 
-from weight_functions import eval_weights, get_weights_methods, weights_on_df
+from weight_functions import (
+    eval_weights,
+    evaluate_fold,
+    get_weights_methods,
+    weights_on_df,
+)
 
 node_feature_columns = ["f" + str(i) for i in range(1, 20)]
 
@@ -96,11 +101,13 @@ class Adaptive_Process(object):
         # endregion
 
         # region 性能日志
-        self.training_time_list = []  # 各折训练耗时：(总时间, 缺陷报告数, 文件数)
-        self.prescoring_log = []  # 权重方法评估：(方法名, (权重向量, 评估得分))
-        self.best_prescoring_log = []  # 各折最佳权重： (方法名, 评估得分)
-        self.regression_log = []  # 回归模型评估：(模型名, 筛选方法名, 评分方法名, 得分)
-        self.best_regression_log = []  # 各折最佳模型，格式同regression_log
+        self.training_time_stats = (
+            {}
+        )  # {折号: {"time": 时间, "bugs": 缺陷数, "files": 文件数}}
+        self.prescoring_log = {}  # {fold_num: {方法名: 评估得分}}
+        self.best_prescoring_log = {}  # {fold_num: 最佳权重方法名}
+        self.regression_log = {}  # 回归模型评估：{折号: {模型名: 评估得分}}
+        self.best_regression_log = {}  # {fold_num: 最佳模型名}
         # endregion
 
         # region 配置映射表（内部使用）
@@ -177,6 +184,7 @@ class Adaptive_Process(object):
         self,
         df: pd.DataFrame,
         columns: List[str],
+        fold_num=0,
     ):
         """
         自适应训练核心流程
@@ -184,6 +192,7 @@ class Adaptive_Process(object):
         参数：
             df (pd.DataFrame): 完整训练数据
             columns (list): 特征列名列表
+            fold_num (int): 当前折号
 
         阶段：
             1. 权重计算阶段：调用compute_weights选择最佳权重方法
@@ -203,9 +212,13 @@ class Adaptive_Process(object):
         w_maks: float = 0
         w_method: str = None
         w_weights: np.ndarray = None
+
+        if fold_num not in self.prescoring_log:
+            self.prescoring_log[fold_num] = {}
+
         for k, v in self.weights.items():
             # 存储每种方法的评估结果
-            self.prescoring_log.append((k, v[1]))
+            self.prescoring_log[fold_num][k] = v[1]
             # 记录最佳方法
             if v[1] > w_maks:
                 w_maks = v[1]
@@ -215,12 +228,13 @@ class Adaptive_Process(object):
         self.weights = w_weights
         self.weights_score = w_maks
         eprint(f"Best weights method: {w_method} MAP: {w_maks}")
-        self.best_prescoring_log.append((w_method, w_maks))
+
+        self.best_prescoring_log[fold_num] = w_method
         eprint("===============")
 
         eprint("=============== Size and regression model select")
 
-        results = Parallel(n_jobs=-1)(
+        results: List[tuple[str, str, str, float]] = Parallel(n_jobs=-1)(
             delayed(self._train)(
                 df,
                 columns,
@@ -234,7 +248,9 @@ class Adaptive_Process(object):
             )
         )
 
-        res_max = 0
+        self.reg_model_score = 0
+        self.regression_log[fold_num] = {}
+
         for res in results:
             current_name = res[0]
             current_cut_function = res[1]
@@ -242,37 +258,35 @@ class Adaptive_Process(object):
             current_score = res[3]
             current_reg_model = self.reg_models_map[current_name]
 
-            name = self.prepare_regressor_name(current_reg_model)
-            self.regression_log.append(
-                (name, current_cut_function, current_score_function, current_score)
+            name = (
+                self.prepare_regressor_name(current_reg_model)
+                + "_"
+                + current_cut_function
             )
-            if current_score > res_max:
-                res_max = current_score
+            self.regression_log[fold_num][name] = current_score
+            if current_score > self.reg_model_score:
                 self.reg_model_name = current_name
                 self.cut_method_name = current_cut_function
                 self.score_method_name = current_score_function
+                self.reg_model_score = current_score
 
         self.reg_model = self.reg_models_map[self.reg_model_name]
         self.cut_method = self.cut_methods_map[self.cut_method_name]
         self.score_method = self.score_methods_map[self.score_method_name]
 
-        self.reg_model_score = res_max
-        name = self.prepare_regressor_name(self.reg_model)
-        self.best_regression_log.append(
-            (name, self.cut_method_name, self.score_method_name, self.reg_model_score)
-        )
+        name = self.prepare_regressor_name(self.reg_model) + "_" + self.cut_method_name
+        self.best_regression_log[fold_num] = name
 
-        eprint(
-            f"Best regression model: {name} MAP: {res_max} Cut: {self.cut_method_name}"
-        )
+        eprint(f"Best regression model: {name} MAP: {self.reg_model_score}")
         eprint("===============")
 
-    def train(self, df: pd.DataFrame):
+    def train(self, df: pd.DataFrame, fold_num):
         """
         训练入口函数
 
         参数：
             df (pd.DataFrame): 当前折的训练数据
+            fold_num (int): 当前折号
 
         逻辑：
             - 首折或强制学习模式下执行完整adapt_process
@@ -286,7 +300,7 @@ class Adaptive_Process(object):
         columns = node_feature_columns.copy()
 
         if not self.first_fold_processed or self.enforce_relearning:
-            self.adapt_process(df, columns)
+            self.adapt_process(df, columns, fold_num)
             self.first_fold_processed = True
 
         self._train(
@@ -300,13 +314,11 @@ class Adaptive_Process(object):
 
         after_training = default_timer()
         total_training = after_training - before_training
-        self.training_time_list.append(
-            (
-                total_training,
-                df.index.get_level_values(0).unique().shape[0],
-                df.index.get_level_values(1).unique().shape[0],
-            )
-        )
+        self.training_time_stats[fold_num] = {
+            "time": total_training,
+            "bugs": df.index.get_level_values(0).unique().shape[0],
+            "files": df.index.get_level_values(1).unique().shape[0],
+        }
 
         return self.reg_model
 
@@ -498,8 +510,9 @@ def _process(
     ptemplate: Adaptive_Process,
     fold_training: pd.DataFrame,
     fold_testing: pd.DataFrame,
+    fold_num: int = 0,
 ):
-    clf = ptemplate.train(fold_training)
+    clf = ptemplate.train(fold_training, fold_num)
     result = ptemplate.predict(clf, fold_testing)
     return result
 
@@ -509,7 +522,6 @@ def process(
     fold_number: int,
     fold_testing: Dict[int, pd.DataFrame],
     fold_training: Dict[int, pd.DataFrame],
-    file_prefix: str,
 ):
     """
     主处理函数
@@ -538,61 +550,6 @@ def process(
 
     all_results_df = pd.concat(results_list)
     all_results_df.reset_index(level=1, drop=True, inplace=True)
-
-    results_timestamp = time.strftime("%Y%m%d%H%M%S")
-    result_dir = f"{file_prefix}_SGD_{results_timestamp}"
-    os.makedirs(result_dir, exist_ok=True)
-
-    training_time_list = ptemplate.training_time_list.copy()
-    prescoring_log = ptemplate.prescoring_log.copy()
-    regression_log = ptemplate.regression_log.copy()
-    best_prescoring_log = ptemplate.best_prescoring_log.copy()
-    best_regression_log = ptemplate.best_regression_log.copy()
-
-    time_sum, bug_reports_number_sum, file_number_sum = map(
-        sum, zip(*training_time_list)
-    )
-
-    mean_time_bug_report_training = time_sum / bug_reports_number_sum
-    mean_time_file_training = time_sum / file_number_sum
-
-    training_time = {
-        "time_sum": time_sum,
-        "bug_reports_number_sum": bug_reports_number_sum,
-        "file_number_sum": file_number_sum,
-        "mean_time_bug_report_training": mean_time_bug_report_training,
-        "mean_time_file_training": mean_time_file_training,
-    }
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_training_time.json"), "w"
-    ) as time_file:
-        json.dump(training_time, time_file, indent=4)
-
-    prescoring_log = ptemplate.prescoring_log.copy()
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_prescoring_log.json"), "w"
-    ) as prescoring_log_file:
-        json.dump(prescoring_log, prescoring_log_file, indent=4)
-
-    regression_log = ptemplate.regression_log.copy()
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_regression_log.json"), "w"
-    ) as regression_log_file:
-        json.dump(regression_log, regression_log_file, indent=4)
-
-    best_prescoring_log = ptemplate.best_prescoring_log.copy()
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_best_prescoring_log.json"),
-        "w",
-    ) as best_prescoring_log_file:
-        json.dump(best_prescoring_log, best_prescoring_log_file, indent=4)
-
-    best_regression_log = ptemplate.best_regression_log.copy()
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_best_regression_log.json"),
-        "w",
-    ) as best_regression_log_file:
-        json.dump(best_regression_log, best_regression_log_file, indent=4)
 
     return {
         "name": ptemplate.name,
@@ -623,29 +580,6 @@ def fold_check(
     weights = method(df, columns)
     Y = np.dot(df[columns], weights)
     return method.__name__, (weights, evaluate_fold(df, Y))
-
-
-def evaluate_fold(df: pd.DataFrame, Y: np.ndarray) -> float:
-    """
-    评估预测结果的MAP指标
-
-    参数：
-        df: 待评估数据集（需包含used_in_fix列）
-        Y: 预测得分向量
-
-    返回：
-        m_a_p: 平均精度均值（Mean Average Precision）
-
-    流程：
-        1. 构建结果数据框（含预测得分）
-        2. 确定最小修复得分阈值（实际修复样本的最低得分）
-        3. 生成候选集（预测得分≥阈值的样本）
-        4. 调用calculate_metric_results计算指标
-    """
-    r = df[["used_in_fix"]].copy(deep=False)
-    r["result"] = Y
-    m_a_p = calculate_metric_results(r, metric_type="MAP")
-    return m_a_p
 
 
 def normal_score(
@@ -852,24 +786,62 @@ def main():
         _,
     ) = load(f"../joblib_memmap_{file_prefix}_graph/data_memmap", mmap_mode="r")
 
-    models = [Adaptive_Process()]
-    results = []
-    for m in models:
-        results.append(
-            process(
-                m,
-                fold_number,
-                fold_testing,
-                fold_training,
-                file_prefix,
-            )
-        )
+    ptemplate = Adaptive_Process()
+    result = process(
+        ptemplate,
+        fold_number,
+        fold_testing,
+        fold_training,
+    )
 
-    results = [r for r in results if r is not None]
+    results_timestamp = time.strftime("%Y%m%d%H%M%S")
+    result_dir = f"{file_prefix}_SGD_{results_timestamp}"
+    os.makedirs(result_dir, exist_ok=True)
+
+    # 保存训练时间统计
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_training_time.json"), "w"
+    ) as time_file:
+        json.dump(ptemplate.training_time_stats, time_file, indent=4)
+
+    # 保存权重方法评估日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_prescoring_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.prescoring_log, file, indent=4)
+
+    # 保存回归模型评估日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_regression_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.regression_log, file, indent=4)
+
+    # 保存最佳权重方法日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_best_prescoring_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.best_prescoring_log, file, indent=4)
+
+    # 保存最佳模型日志
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_best_regression_log.json"), "w"
+    ) as file:
+        json.dump(ptemplate.best_regression_log, file, indent=4)
+
+    # 保存模型训练结果指标
+    with open(
+        os.path.join(result_dir, f"{ptemplate.name}_metrics_results.json"), "w"
+    ) as metrics_file:
+        # 将结果转换为可JSON序列化的格式
+        metrics_data = {
+            "accuracy_at_k": {str(k): v for k, v in result["results"][0].items()},
+            "mean_average_precision": float(result["results"][1]),
+            "mean_reciprocal_rank": float(result["results"][2]),
+        }
+        json.dump(metrics_data, metrics_file, indent=4)
+
     print("===============Results===============")
-    for result in results:
-        print("name ", result["name"])
-        print_metrics(*result["results"])
+    print_metrics(*result["results"])
 
 
 if __name__ == "__main__":

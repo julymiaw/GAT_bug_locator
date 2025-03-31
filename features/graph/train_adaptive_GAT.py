@@ -569,7 +569,7 @@ class Adaptive_Process(object):
         self.use_prescoring_always = False  # 是否始终使用预评分权重
         self.use_reg_model_always = True  # 是否强制使用回归模型
         self.use_prescoring_cross_validation = True  # 权重计算阶段交叉验证开关
-        self.use_training_cross_validation = False
+        self.use_training_cross_validation = True
         self.cross_validation_fold_number = 5  # 交叉验证折数
         # endregion
 
@@ -665,6 +665,7 @@ class Adaptive_Process(object):
             df (pd.DataFrame): 完整训练数据
             columns (list): 特征列名列表
             dependency_df (pd.DataFrame): 依赖数据
+            fold_num (int): 当前折号
 
         阶段：
             1. 权重计算阶段：调用compute_weights选择最佳权重方法
@@ -747,6 +748,7 @@ class Adaptive_Process(object):
         参数：
             df (pd.DataFrame): 当前折的训练数据
             dependency_df (Data): 当前折的依赖数据
+            fold_num (int): 当前折号
 
         逻辑：
             - 首折或强制学习模式下执行完整adapt_process
@@ -929,13 +931,13 @@ def get_skmodels(model_type="auto"):
         GATRegressor模型列表
     """
     # 数据集大小不同，最优的超参数可能不同
-    hidden_dim = [16, 32]
-    alpha_values = [1e-2]
+    hidden_dim = [16, 32, 64]
+    alpha_values = [1e-3, 1e-4]
     loss = ["WeightedMSE"]
-    lr_list = [0.001]
+    lr_list = [1e-4, 5e-4, 1e-3]
     penalty = ["l2", None]
-    dropout_rates = [0.3, 0.4]
-    gat_heads = [1, 2]
+    dropout_rates = [0.2, 0.4]
+    gat_heads = [1, 2, 4]
     use_self_loops_modes = [False, True]
 
     # 根据模型类型配置heads和use_self_loops_modes参数
