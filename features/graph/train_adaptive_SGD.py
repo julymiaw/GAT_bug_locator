@@ -23,15 +23,10 @@ from sklearn.linear_model import SGDRegressor
 from sklearn.model_selection import KFold
 from skopt import load
 
-from metrics import calculate_metric_results, print_metrics
+from metrics import calculate_metric_results, print_metrics, eval_weights, evaluate_fold
 from train_utils import eprint
 
-from weight_functions import (
-    eval_weights,
-    evaluate_fold,
-    get_weights_methods,
-    weights_on_df,
-)
+from weight_functions import get_weights_methods, weights_on_df
 
 node_feature_columns = ["f" + str(i) for i in range(1, 20)]
 

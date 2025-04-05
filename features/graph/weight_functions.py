@@ -265,52 +265,6 @@ def weights_on_df(
     return method.__name__, weights
 
 
-def eval_weights(
-    m_name: str, weights: np.ndarray, df: pd.DataFrame, columns: List[str]
-) -> Tuple[str, Tuple[np.ndarray, float]]:
-    """
-    权重评估函数（验证阶段）
-
-    参数：
-        m_name: 权重方法名称
-        weights: 已计算的权重向量
-        df: 验证集数据
-        columns: 特征列名列表
-
-    返回：
-        tuple: (方法名称, (权重向量, MAP得分))
-
-    流程：
-        1. 计算验证集预测得分：X * weights
-        2. 调用evaluate_fold计算MAP指标
-    """
-    Y = np.dot(df[columns], weights)
-    return m_name, (weights, evaluate_fold(df, Y))
-
-
-def evaluate_fold(df: pd.DataFrame, Y: np.ndarray) -> float:
-    """
-    评估预测结果的MAP指标
-
-    参数：
-        df: 待评估数据集（需包含used_in_fix列）
-        Y: 预测得分向量
-
-    返回：
-        m_a_p: 平均精度均值（Mean Average Precision）
-
-    流程：
-        1. 构建结果数据框（含预测得分）
-        2. 确定最小修复得分阈值（实际修复样本的最低得分）
-        3. 生成候选集（预测得分≥阈值的样本）
-        4. 调用calculate_metric_results计算指标
-    """
-    r = df[["used_in_fix"]].copy(deep=False)
-    r["result"] = Y
-    m_a_p = calculate_metric_results(r, metric_type="MAP")
-    return m_a_p
-
-
 # endregion
 
 

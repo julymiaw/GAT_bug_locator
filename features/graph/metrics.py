@@ -23,7 +23,7 @@
 import numpy as np
 import pandas as pd
 import sys
-from typing import Dict, List, Tuple, Union
+from typing import Callable, Dict, List, Tuple, Union
 
 
 def calculate_metrics(
@@ -282,6 +282,88 @@ def calculate_metric_results(
         )
     else:
         return result
+
+
+# region 辅助函数
+
+
+def fold_check(
+    method: Callable[[pd.DataFrame, List[str]], np.ndarray],
+    df: pd.DataFrame,
+    columns: List[str],
+    metric_type: str = "MAP",
+) -> Tuple[str, Tuple[np.ndarray, float]]:
+    """
+    单折权重评估函数（非交叉验证模式）
+
+    参数：
+        method (function): 权重计算方法
+        df (pd.DataFrame): 完整训练数据
+        columns (list): 特征列名列表
+        metric_type (str): 评估指标类型，可选值:
+            - "MAP": 平均精确率
+            - "MRR": 平均倒数排名
+
+    返回：
+        tuple: (方法名称, (权重向量, MAP得分))
+
+    说明：
+        - 当use_prescoring_cross_validation=False时使用
+        - 直接在整个数据集上计算和评估
+    """
+    weights = method(df, columns)
+    Y = np.dot(df[columns], weights)
+    return method.__name__, (weights, evaluate_fold(df, Y, metric_type=metric_type))
+
+
+def eval_weights(
+    m_name: str,
+    weights: np.ndarray,
+    df: pd.DataFrame,
+    columns: List[str],
+    metric_type: str = "MAP",
+) -> Tuple[str, Tuple[np.ndarray, float]]:
+    """
+    权重评估函数（验证阶段）
+
+    参数：
+        m_name: 权重方法名称
+        weights: 已计算的权重向量
+        df: 验证集数据
+        columns: 特征列名列表
+        metric_type: 评估指标类型，可选值:
+            - "MAP": 平均精确率
+            - "MRR": 平均倒数排名
+
+    返回：
+        tuple: (方法名称, (权重向量, MAP得分))
+
+    """
+    Y = np.dot(df[columns], weights)
+    return m_name, (weights, evaluate_fold(df, Y, metric_type=metric_type))
+
+
+def evaluate_fold(df: pd.DataFrame, Y: np.ndarray, metric_type: str = "MAP") -> float:
+    """
+    评估预测结果
+
+    参数：
+        df: 待评估数据集（需包含used_in_fix列）
+        Y: 预测得分向量
+        metric_type: 评估指标类型，可选值:
+            - "MAP": 平均精确率
+            - "MRR": 平均倒数排名
+
+    返回：
+        float: 评估指标值（MAP或MRR）
+
+    """
+    r = df[["used_in_fix"]].copy(deep=False)
+    r["result"] = Y
+    return calculate_metric_results(r, metric_type=metric_type)
+
+
+# endregion
 
 
 def print_metrics(

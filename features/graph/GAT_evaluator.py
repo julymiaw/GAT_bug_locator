@@ -47,7 +47,6 @@ class AdaptiveGATEvaluator:
         self.regression_log = {}
         self.prescoring_log = {}
         self.prediction_log = {}
-        self.cv_regression_log = {}
         self.best_regression = {}
         self.best_prescoring = {}
 
@@ -119,7 +118,7 @@ class AdaptiveGATEvaluator:
             print(f"✗ 无法加载最佳预评分日志: {e}")
 
     def preprocess_data(self):
-        """预处理和整合日志数据"""
+        """预处理和整合日志数据，保持自环模型和真实边模型的配对关系"""
         # 创建包含所有模型性能数据的DataFrame
         models_data = []
 
@@ -142,18 +141,35 @@ class AdaptiveGATEvaluator:
                     best_method
                 ]
 
+        # 记录过滤状态
+        filtered_stats = {
+            "unconverged_models": 0,  # 训练阶段未收敛好的模型数
+            "underperforming_models": 0,  # 预测阶段表现不佳的模型数
+            "filtered_due_to_paired_model": 0,  # 因为配对模型被过滤而一同过滤的模型数
+        }
+
+        # 先收集所有模型的数据（不做过滤）
+        all_models_by_fold = {}
+
         for fold_num in self.regression_log.keys():
             # 添加权重法的结果
-            models_data.append(
-                {
-                    "fold": fold_num,
-                    "model_name": "weights_method",
-                    "train_score": weights_method_train_scores.get(fold_num),
-                    "test_score": weights_method_results.get(fold_num),
-                    "is_best": False,
-                    "model_category": "baseline_weights",
-                }
-            )
+            weights_model = {
+                "fold": fold_num,
+                "model_name": "weights_method",
+                "train_score": weights_method_train_scores.get(fold_num),
+                "test_score": weights_method_results.get(fold_num),
+                "is_best": False,
+                "model_category": "baseline_weights",
+            }
+
+            models_data.append(weights_model)
+
+            # 初始化当前fold的模型列表
+            fold_models = []
+
+            # 获取当前fold的权重方法基线得分
+            fold_weight_train_score = weights_method_train_scores.get(fold_num)
+            fold_weight_test_score = weights_method_results.get(fold_num)
 
             for model_name, train_score in self.regression_log[fold_num].items():
                 # 获取测试分数
@@ -172,14 +188,141 @@ class AdaptiveGATEvaluator:
                     "train_score": train_score,
                     "test_score": test_score,
                     "is_best": is_best,
+                    "should_filter": False,  # 标记是否应该被过滤
+                    "filter_reason": None,  # 过滤原因
                     **parsed_params,
                 }
 
-                models_data.append(model_info)
+                # 检查过滤条件1：如果训练阶段得分低于最佳权重方法(未正确收敛)
+                if (
+                    fold_weight_train_score is not None
+                    and train_score < fold_weight_train_score
+                ):
+                    # model_info["should_filter"] = True
+                    model_info["filter_reason"] = "unconverged"
+                    # filtered_stats["unconverged_models"] += 1
+
+                # 检查过滤条件2：如果预测阶段得分低于权重法(表现不佳)
+                if (
+                    fold_weight_test_score is not None
+                    and test_score is not None
+                    and test_score < fold_weight_test_score
+                ):
+                    model_info["should_filter"] = True
+                    model_info["filter_reason"] = "underperforming"
+                    filtered_stats["underperforming_models"] += 1
+
+                fold_models.append(model_info)
+
+            all_models_by_fold[fold_num] = fold_models
+
+        # 找出自环模型和真实边模型的配对关系
+        paired_models = {}
+
+        for fold_num, fold_models in all_models_by_fold.items():
+            fold_paired = {}
+
+            # 先按不同类别分组
+            selfloop_models = [
+                m for m in fold_models if m.get("model_category") == "gat_selfloop"
+            ]
+            realedge_models = [
+                m for m in fold_models if m.get("model_category") == "gat_realedge"
+            ]
+
+            # 配对自环模型和真实边模型
+            for selfloop_model in selfloop_models:
+                for realedge_model in realedge_models:
+                    # 检查是否具有相同的超参数配置
+                    if (
+                        selfloop_model["loss_type"] == realedge_model["loss_type"]
+                        and selfloop_model["hidden_dim"] == realedge_model["hidden_dim"]
+                        and selfloop_model["penalty"] == realedge_model["penalty"]
+                        and selfloop_model["alpha"] == realedge_model["alpha"]
+                        and selfloop_model["dropout"] == realedge_model["dropout"]
+                        and selfloop_model["learning_rate"]
+                        == realedge_model["learning_rate"]
+                        and selfloop_model["heads"] == realedge_model["heads"]
+                    ):
+
+                        # 记录配对关系
+                        fold_paired[selfloop_model["model_name"]] = realedge_model[
+                            "model_name"
+                        ]
+                        fold_paired[realedge_model["model_name"]] = selfloop_model[
+                            "model_name"
+                        ]
+                        break
+
+            paired_models[fold_num] = fold_paired
+
+        # 根据配对关系应用过滤规则
+        for fold_num, fold_models in all_models_by_fold.items():
+            fold_paired = paired_models[fold_num]
+
+            # 检查每个模型的配对模型是否应该被过滤
+            for model in fold_models:
+                paired_model_name = fold_paired.get(model["model_name"])
+
+                if paired_model_name and not model["should_filter"]:
+                    # 找到配对的模型
+                    paired_model = next(
+                        (
+                            m
+                            for m in fold_models
+                            if m["model_name"] == paired_model_name
+                        ),
+                        None,
+                    )
+
+                    # 如果配对模型应该被过滤，则这个模型也应该被过滤
+                    if paired_model and paired_model["should_filter"]:
+                        # model["should_filter"] = True
+                        model["filter_reason"] = (
+                            f"paired_with_{paired_model['filter_reason']}"
+                        )
+                        filtered_stats["filtered_due_to_paired_model"] += 1
+
+            # 只保留不应该被过滤的模型
+            valid_fold_models = [m for m in fold_models if not m["should_filter"]]
+
+            # 将有效模型添加到最终数据列表中
+            for model in valid_fold_models:
+                # 移除临时过滤标记
+                if "should_filter" in model:
+                    del model["should_filter"]
+                if "filter_reason" in model:
+                    del model["filter_reason"]
+
+                models_data.append(model)
 
         # 创建DataFrame
         self.model_performance_df = pd.DataFrame(models_data)
+
+        # 记录配对关系以供后续分析
+        self.paired_models = paired_models
+
+        # 打印过滤统计信息
+        total_filtered = (
+            filtered_stats["unconverged_models"]
+            + filtered_stats["underperforming_models"]
+            + filtered_stats["filtered_due_to_paired_model"]
+        )
+
         print(f"✓ 成功处理 {len(self.model_performance_df)} 个模型配置的数据")
+        print(f"🔍 过滤掉 {total_filtered} 个模型:")
+        print(f"  - {filtered_stats['unconverged_models']} 个模型训练阶段未正确收敛")
+        print(
+            f"  - {filtered_stats['underperforming_models']} 个模型预测表现不如权重法"
+        )
+        print(
+            f"  - {filtered_stats['filtered_due_to_paired_model']} 个模型因配对模型被过滤而一同移除"
+        )
+
+        # 记录过滤结果
+        self.filtered_stats = filtered_stats
+
+        return filtered_stats
 
     def parse_model_name(self, model_name: str) -> Dict[str, Any]:
         """
@@ -232,12 +375,46 @@ class AdaptiveGATEvaluator:
 
     def analyze_overall_performance(self):
         """分析整体性能并生成摘要"""
-        # 获取最佳模型
+        # 获取标记为最佳的模型
         best_models = self.model_performance_df[self.model_performance_df["is_best"]]
+
+        # 如果没有找到最佳模型(可能是被过滤掉了)，处理这种情况
+        if best_models.empty:
+            print(
+                "⚠ 警告: 所有标记为'最佳'的模型都被过滤掉了，使用剩余模型中表现最好的作为替代"
+            )
+
+            # 按照fold分组，为每个fold选择一个新的最佳模型
+            for fold in self.model_performance_df["fold"].unique():
+                fold_models = self.model_performance_df[
+                    self.model_performance_df["fold"] == fold
+                ]
+
+                # 先尝试从非权重模型中选择
+                fold_nn_models = fold_models[
+                    fold_models["model_category"] != "baseline_weights"
+                ]
+
+                if not fold_nn_models.empty:
+                    # 找出训练得分最高的非权重模型并标记为最佳
+                    best_idx = fold_nn_models["train_score"].idxmax()
+                    self.model_performance_df.loc[best_idx, "is_best"] = True
+                    print(
+                        f"  折 {fold}: 标记 {self.model_performance_df.loc[best_idx, 'model_name']} 为新的最佳模型"
+                    )
+                else:
+                    print(f"  折 {fold}: 没有找到非权重模型")
+
+            # 重新获取更新后的最佳模型列表
+            best_models = self.model_performance_df[
+                self.model_performance_df["is_best"]
+            ]
 
         # 生成摘要报告
         summary = {
             "总模型数": len(self.model_performance_df),
+            "过滤掉的模型数": self.filtered_stats.get("unconverged_models", 0)
+            + self.filtered_stats.get("underperforming_models", 0),
             "最佳模型fold": best_models["fold"].tolist(),
             "最佳模型": best_models["model_name"].tolist(),
             "最佳模型训练得分": best_models["train_score"].tolist(),
@@ -364,7 +541,7 @@ class AdaptiveGATEvaluator:
         plt.close()
 
     def analyze_self_loops_effect(self):
-        """分析自环模式对模型性能的影响，按fold分组进行分析"""
+        """分析自环模式对模型性能的影响，直接使用预处理阶段建立的配对关系"""
         # 确保model_category字段存在
         if "model_category" not in self.model_performance_df.columns:
             print("⚠ 数据中没有model_category信息，无法绘制分类模型对比图")
@@ -386,37 +563,40 @@ class AdaptiveGATEvaluator:
                 fold_models["model_category"] == "gat_realedge"
             ]
 
-            # 配对分析：查找具有相同配置但自环模式不同的模型对
+            # 使用预处理阶段已建立的配对关系
             fold_pairs = []
 
+            # 检查是否有配对信息
             for _, self_loop_model in fold_self_loop.iterrows():
-                # 查找相同配置但不使用自环的模型
-                matching_models = fold_real_edge[
-                    (fold_real_edge["loss_type"] == self_loop_model["loss_type"])
-                    & (fold_real_edge["hidden_dim"] == self_loop_model["hidden_dim"])
-                    & (fold_real_edge["penalty"] == self_loop_model["penalty"])
-                    & (fold_real_edge["alpha"] == self_loop_model["alpha"])
-                    & (fold_real_edge["dropout"] == self_loop_model["dropout"])
-                    & (
-                        fold_real_edge["learning_rate"]
-                        == self_loop_model["learning_rate"]
-                    )
-                    & (fold_real_edge["heads"] == self_loop_model["heads"])
-                ]
+                model_name = self_loop_model["model_name"]
 
-                if not matching_models.empty:
-                    real_edge_model = matching_models.iloc[0]
+                # 获取对应的真实边模型名称
+                if model_name in self.paired_models[fold]:
+                    real_edge_name = self.paired_models[fold][model_name]
 
-                    pair_info = {
-                        "self_loop_model": self_loop_model["model_name"],
-                        "real_edge_model": real_edge_model["model_name"],
-                        "self_loop_train": self_loop_model["train_score"],
-                        "real_edge_train": real_edge_model["train_score"],
-                        "self_loop_test": self_loop_model["test_score"],
-                        "real_edge_test": real_edge_model["test_score"],
-                    }
+                    # 查找对应的真实边模型
+                    real_edge_models = fold_real_edge[
+                        fold_real_edge["model_name"] == real_edge_name
+                    ]
 
-                    fold_pairs.append(pair_info)
+                    if not real_edge_models.empty:
+                        real_edge_model = real_edge_models.iloc[0]
+
+                        pair_info = {
+                            "self_loop_model": model_name,
+                            "real_edge_model": real_edge_name,
+                            "self_loop_train": self_loop_model["train_score"],
+                            "real_edge_train": real_edge_model["train_score"],
+                            "self_loop_test": self_loop_model["test_score"],
+                            "real_edge_test": real_edge_model["test_score"],
+                            "real_edge_improvement": real_edge_model["test_score"]
+                            - self_loop_model["test_score"],
+                        }
+
+                        fold_pairs.append(pair_info)
+
+            # 对结果按真实边模型对比自环模型的提升量降序排列
+            fold_pairs.sort(key=lambda x: x["real_edge_improvement"], reverse=True)
 
             # 保存当前fold的统计信息
             self_loop_stats[fold] = fold_pairs
@@ -571,6 +751,8 @@ class AdaptiveGATEvaluator:
                         alpha=0.5,
                         linewidth=0.7,
                     )
+
+        plt.axis("equal")
 
         # 添加辅助元素
         plt.xlabel("回归阶段得分", fontsize=12)
