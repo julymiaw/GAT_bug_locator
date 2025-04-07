@@ -66,17 +66,17 @@ class AdaptiveGATEvaluator:
 
                 self.model_registry = registry_data
                 self.training_time = registry_data.get("training_time", {})
-            print("✓ 成功加载模型注册表")
+            print("✓ 成功加载实验跟踪管理器模块")
         except Exception as e:
-            print(f"✗ 无法加载模型注册表: {e}")
+            print(f"✗ 无法加载实验跟踪管理器模块: {e}")
             return False
 
         return True
 
     def preprocess_data(self):
-        """直接从模型注册表中提取并处理数据"""
+        """直接从实验跟踪管理器模块中提取并处理数据"""
         if not self.model_registry:
-            print("⚠ 模型注册表未加载，无法处理数据")
+            print("⚠ 实验跟踪管理器模块未加载，无法处理数据")
             return {}
 
         models = self.model_registry.get("models", {})

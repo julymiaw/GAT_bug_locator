@@ -15,7 +15,7 @@ from itertools import product
 from timeit import default_timer
 
 import gc
-from typing import Dict, List, Tuple
+from typing import Dict, List
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
@@ -601,7 +601,7 @@ class Adaptive_Process(object):
         - 使用joblib并行化权重计算和模型评估过程
     """
 
-    def __init__(self, model_type="auto"):
+    def __init__(self, model_type="auto", metric_type="MRR"):
         """
         初始化方法，配置所有可用算法组件
 
@@ -610,6 +610,9 @@ class Adaptive_Process(object):
                 "auto": 自动选择性能最佳的模型（默认）
                 "mlp": 只使用MLP模型（heads=None）
                 "gat": 只使用GAT模型（heads=数字，use_self_loops_only=False）
+            metric_type: 使用的评估指标类型，可选值:
+                "MAP": 平均精确率（Mean Average Precision）
+                "MRR": 平均倒数排名（Mean Reciprocal Rank）
         """
         # region 算法组件配置
         # 特征权重计算方法列表（统计检验/树模型/降维方法等）
@@ -620,6 +623,12 @@ class Adaptive_Process(object):
         if model_type not in ["auto", "mlp", "gat"]:
             eprint(f"警告: 未知的模型类型 '{model_type}'，使用 'auto' 模式")
             self.model_type = "auto"
+
+        # 指定评估指标类型
+        self.metric_type = metric_type
+        if metric_type not in ["MAP", "MRR"]:
+            eprint(f"警告: 未知的评估指标类型 '{metric_type}'，使用 'MRR' 模式")
+            self.metric_type = "MRR"
 
         # 回归模型集合
         self.reg_models: List[GATRegressor] = []
@@ -639,7 +648,6 @@ class Adaptive_Process(object):
 
         # region 配置参数
         self.name = "Adaptive"  # 算法标识名
-        self.metric_type = "MRR"  # 评估指标类型
         self.use_prescoring_always = False  # 是否始终使用预评分权重
         self.use_reg_model_always = True  # 是否强制使用回归模型
         self.use_prescoring_cross_validation = True  # 权重计算阶段交叉验证开关
@@ -997,15 +1005,13 @@ class Adaptive_Process(object):
             )
             result = np.dot(X, self.weights)
 
-        # 记录权重和模型
-
-        eval_score = evaluate_fold(df, model_result, self.metric_type)
-
-        # 记录权重方法的预测结果
-        weights_model_id = f"weights_method_fold{fold_num}"
-        model_result = np.dot(X, self.weights)
-
-        w_scores = evaluate_fold(df, model_result, None)
+        weights_model_id, (_, w_scores) = eval_weights(
+            f"weights_method_fold{fold_num}",
+            self.weights,
+            df,
+            node_feature_columns,
+            None,
+        )
 
         self.experiment_tracker.update_result(
             weights_model_id, f"predict_MAP_score", w_scores["MAP"]
@@ -1219,6 +1225,13 @@ def main():
     parser.add_argument("file_prefix", type=str, help="Feature files prefix")
     parser.add_argument("--max", action="store_true", help="Include feature 37")
     parser.add_argument("--mean", action="store_true", help="Include feature 38")
+    parser.add_argument(
+        "--metric",
+        type=str,
+        choices=["MAP", "MRR"],
+        default="MRR",
+        help="评估指标类型 (MAP 或 MRR，默认: MRR)",
+    )
     args = parser.parse_args()
 
     # 根据参数决定是否添加特征37和38
@@ -1237,7 +1250,7 @@ def main():
         fold_dependency_training,
     ) = load(f"../joblib_memmap_{file_prefix}_graph/data_memmap", mmap_mode="r")
 
-    ptemplate = Adaptive_Process()
+    ptemplate = Adaptive_Process(metric_type=args.metric)
 
     result = process(
         ptemplate,
