@@ -360,7 +360,15 @@ def evaluate_fold(df: pd.DataFrame, Y: np.ndarray, metric_type: str = "MAP") -> 
     """
     r = df[["used_in_fix"]].copy(deep=False)
     r["result"] = Y
-    return calculate_metric_results(r, metric_type=metric_type)
+
+    if metric_type is None:
+        # 同时计算MAP和MRR，返回字典
+        map_score = calculate_metric_results(r, metric_type="MAP")
+        mrr_score = calculate_metric_results(r, metric_type="MRR")
+        return {"MAP": map_score, "MRR": mrr_score}
+    else:
+        # 返回单一指标
+        return calculate_metric_results(r, metric_type=metric_type)
 
 
 # endregion

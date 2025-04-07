@@ -2,33 +2,48 @@
 # -*- coding: utf-8 -*-
 
 """
-模型参数与结果注册表模块
+实验跟踪管理器模块
 
-用途：提供一个中心化的数据结构来存储、管理和序列化模型参数及其评估结果
+用途：提供一个中心化的数据结构来存储、管理和序列化ML实验的完整生命周期
 特点：
-    - 支持自动从模型实例提取参数
+    - 跟踪模型参数、训练过程和评估结果
+    - R支持自动从模型实例提取参数
+    - 记录训练时间和数据规模统计
     - 提供DataFrame和JSON格式的导出
     - 分离模型名称和参数管理，使参数扩展更灵活
-    - 支持模型结果追踪，适用于多折交叉验证场景
+    - 支持多折交叉验证结果聚合与比较
 
 作者: SRTP团队
-日期: 2025年4月4日
+日期: 2025年4月7日
 """
 
+import datetime
 import json
 import numpy as np
 import pandas as pd
 
 
-class ModelRegistry:
-    """模型参数与结果注册表"""
+class ExperimentTracker:
+    """实验跟踪管理器，用于记录机器学习实验的完整周期"""
 
     def __init__(self):
         """初始化模型注册表"""
         self.models = {}  # 模型实例字典 {model_id: model_instance}
         self.model_params = {}  # 模型参数字典 {model_id: {param_name: param_value}}
         self.model_results = {}  # 模型结果字典 {model_id: {metric_name: metric_value}}
-        self.model_counter = 0  # 模型计数器，用于生成唯一ID
+        self.model_counter = 0  # 模型计数器
+        self.fold_counters = {}  # 每个折的单独计数器
+
+        self.training_time_stats = (
+            {}
+        )  # {fold_num: {"time": 秒数, "bugs": 数量, "files": 数量}}
+
+        # 实验元数据
+        self.metadata = {
+            "total_models": 0,
+            "timestamp": None,
+            "experiment_name": "adaptive_gat_experiment",
+        }
 
     def register_model(self, model, fold_num):
         """
@@ -41,8 +56,15 @@ class ModelRegistry:
         返回:
             model_id: 模型唯一标识符
         """
-        # 生成唯一ID，如果提供了fold_num，则包含在ID中
-        model_id = f"model_fold{fold_num}_{self.model_counter}"
+        # 如果这是新的折，初始化该折的计数器
+        if fold_num not in self.fold_counters:
+            self.fold_counters[fold_num] = 0
+
+        # 生成唯一ID
+        counter = self.fold_counters[fold_num]
+        model_id = f"model_fold{fold_num}_{counter}"
+
+        self.fold_counters[fold_num] += 1
         self.model_counter += 1
 
         # 存储模型实例
@@ -72,6 +94,8 @@ class ModelRegistry:
 
         self.model_params[model_id] = params
         self.model_results[model_id] = {}
+
+        return model_id
 
     def update_result(self, model_id, metric_name, metric_value):
         """
@@ -104,6 +128,28 @@ class ModelRegistry:
 
         if best_val_score is not None:
             self.model_results[model_id]["best_validation_score"] = best_val_score
+
+    def record_training_time(self, fold_num, time_seconds, bugs_count, files_count):
+        """
+        记录特定折的训练时间统计
+
+        参数:
+            fold_num: 折号
+            time_seconds: 训练时间(秒)
+            bugs_count: Bug数量
+            files_count: 文件数量
+        """
+        self.training_time_stats[str(fold_num)] = {
+            "time": time_seconds,
+            "bugs": bugs_count,
+            "files": files_count,
+            "seconds_per_bug": time_seconds / bugs_count if bugs_count > 0 else 0,
+            "seconds_per_file": time_seconds / files_count if files_count > 0 else 0,
+        }
+
+    def get_training_time_stats(self):
+        """获取训练时间统计"""
+        return self.training_time_stats
 
     def get_model(self, model_id):
         """获取模型实例"""
@@ -210,12 +256,15 @@ class ModelRegistry:
         参数:
             file_path: JSON文件路径
         """
+
+        # 更新元数据
+        self.metadata["total_models"] = len(self.model_params)
+        self.metadata["timestamp"] = datetime.datetime.now().isoformat()
+
         data = {
             "models": {},
-            "metadata": {
-                "total_models": self.model_counter,
-                "timestamp": pd.Timestamp.now().isoformat(),
-            },
+            "training_time": self.training_time_stats,
+            "metadata": self.metadata,
         }
 
         for model_id in self.model_params:
@@ -246,8 +295,15 @@ class ModelRegistry:
                 self.model_params[model_id] = model_data.get("params", {})
                 self.model_results[model_id] = model_data.get("results", {})
 
-            if "metadata" in data and "total_models" in data["metadata"]:
-                self.model_counter = data["metadata"]["total_models"]
+            # 加载元数据
+            if "metadata" in data:
+                self.metadata = data["metadata"]
+                if "total_models" in data["metadata"]:
+                    self.model_counter = data["metadata"]["total_models"]
+
+            # 加载训练时间统计
+            if "training_time" in data:
+                self.training_time_stats = data["training_time"]
 
     def _convert_to_json_serializable(self, obj):
         """将对象转换为JSON可序列化的格式"""
@@ -269,4 +325,4 @@ class ModelRegistry:
         self.models.clear()
         self.model_params.clear()
         self.model_results.clear()
-        # 保留计数器值
+        # 保留计数器值和元数据

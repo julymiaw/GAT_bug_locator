@@ -15,7 +15,7 @@ from itertools import product
 from timeit import default_timer
 
 import gc
-from typing import Callable, Dict, List, Tuple
+from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
@@ -31,7 +31,6 @@ from torch_geometric.data import Data
 
 from metrics import (
     calculate_metric_results,
-    calculate_metrics,
     print_metrics,
     eval_weights,
     evaluate_fold,
@@ -39,7 +38,7 @@ from metrics import (
 )
 from train_utils import eprint
 from ranking_losses import WeightedRankMSELoss
-from model_registry import ModelRegistry
+from experiment_tracker import ExperimentTracker
 
 from weight_functions import (
     get_weights_methods,
@@ -258,8 +257,6 @@ class GATRegressor:
         self.criterion = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # 记录最佳验证性能
-        self.best_validation_score = -float("inf")
         self.best_epoch = 0
 
         # 设置随机种子
@@ -351,8 +348,6 @@ class GATRegressor:
         best_train_loss = float("inf")  # 用于损失收敛的最佳训练损失
         no_improvement_count = 0
         best_weights = None
-        self.best_epoch = 0  # 重置最佳轮次
-        self.best_validation_score = -float("inf")  # 重置最佳验证分数
 
         for epoch in range(self.max_iter):
             # 如果需要，打乱数据
@@ -546,7 +541,7 @@ class GATRegressor:
             all_bugs_df = pd.concat(temp_dfs)
 
             # 直接使用metrics.py中的现有函数计算评估指标
-            score = calculate_metrics(all_bugs_df, metric_type=metric_type)
+            score = calculate_metric_results(all_bugs_df, metric_type=metric_type)
 
             return score
 
@@ -652,22 +647,7 @@ class Adaptive_Process(object):
         self.cross_validation_fold_number = 5  # 交叉验证折数
         # endregion
 
-        # region 性能日志
-        self.training_time_stats = (
-            {}
-        )  # {折号: {"time": 时间, "bugs": 缺陷数, "files": 文件数}}
-        self.prescoring_log = {}  # {fold_num: {方法名: 评估得分}}
-        self.best_prescoring_log = {}  # {fold_num: 最佳权重方法名}
-        self.regression_log = {}  # 回归模型评估：{折号: {模型名: 评估得分}}
-        self.prediction_log = {}  # 预测结果日志：{折号: {模型名: 评估得分}}
-        self.best_regression_log = {}  # {fold_num: 最佳模型名}
-        # endregion
-
-        # region 配置映射表（内部使用）
-        self.weights_methods_map = {m.__name__: m for m in self.weights_methods}
-        # endregion
-
-        self.model_registry = ModelRegistry()
+        self.experiment_tracker = ExperimentTracker()
 
     def train(self, df: pd.DataFrame, dependency_df: pd.DataFrame, fold_num):
         """
@@ -693,11 +673,13 @@ class Adaptive_Process(object):
 
         after_training = default_timer()
         total_training = after_training - before_training
-        self.training_time_stats[fold_num] = {
-            "time": total_training,
-            "bugs": df.index.get_level_values(0).unique().shape[0],
-            "files": df.index.get_level_values(1).unique().shape[0],
-        }
+
+        self.experiment_tracker.record_training_time(
+            fold_num,
+            total_training,
+            df.index.get_level_values(0).unique().shape[0],  # bugs count
+            df.index.get_level_values(1).unique().shape[0],  # files count
+        )
 
         return self.reg_model
 
@@ -727,30 +709,48 @@ class Adaptive_Process(object):
             self.reg_model: 最佳回归模型实例
         """
         eprint("=============== Weights Select")
-        self.compute_weights(df, columns)
+        results = self.compute_weights(df, columns)
 
         # 选择最佳权重方法
         w_maks: float = 0
         w_method: str = None
         w_weights: np.ndarray = None
+        w_map_score: float = 0
+        w_mrr_score: float = 0
 
-        if fold_num not in self.prescoring_log:
-            self.prescoring_log[fold_num] = {}
-
-        for k, v in self.weights.items():
-            # 存储每种方法的评估结果
-            self.prescoring_log[fold_num][k] = v[1]
+        for k, (weights, scores) in results.items():
+            current_score = scores[self.metric_type]
             # 记录最佳方法
-            if v[1] > w_maks:
-                w_maks = v[1]
+            if current_score > w_maks:
+                w_maks = current_score
                 w_method = k
-                w_weights = v[0]
+                w_weights = weights
+                w_map_score = scores["MAP"]
+                w_mrr_score = scores["MRR"]
 
         self.weights = w_weights
         self.weights_score = w_maks
         eprint(f"Best weights method: {w_method} {self.metric_type}: {w_maks}")
+        eprint(f"  MAP: {w_map_score:.4f}, MRR: {w_mrr_score:.4f}")
 
-        self.best_prescoring_log[fold_num] = w_method
+        weights_model_id = f"weights_method_fold{fold_num}"
+        if weights_model_id not in self.experiment_tracker.model_params:
+            # 注册权重方法
+            self.experiment_tracker.model_params[weights_model_id] = {
+                "method": w_method,  # 使用刚刚确定的最佳方法名称
+                "fold_num": fold_num,
+                "model_type": "weights",
+            }
+            self.experiment_tracker.model_results[weights_model_id] = {}
+
+        # 更新权重方法的训练得分
+        self.experiment_tracker.update_result(
+            weights_model_id, f"train_MAP_score", w_map_score
+        )
+        self.experiment_tracker.update_result(
+            weights_model_id, f"train_MRR_score", w_mrr_score
+        )
+
         eprint("===============")
 
         eprint("=============== Regression model select")
@@ -760,7 +760,7 @@ class Adaptive_Process(object):
         for base_model in self.reg_models:
             # 克隆模型，以避免模型实例在多个折之间共享
             fold_model = clone_regressor(base_model)
-            self.model_registry.register_model(fold_model, fold_num)
+            self.experiment_tracker.register_model(fold_model, fold_num)
             fold_reg_models.append(fold_model)
 
         results: List[tuple[GATRegressor, float]] = Parallel(n_jobs=8)(
@@ -775,26 +775,37 @@ class Adaptive_Process(object):
         )
 
         self.reg_model_score = 0
-        self.regression_log[fold_num] = {}
 
-        for res in results:
-            current_reg_model, current_score = res
-            current_model_id = current_reg_model.model_id
+        for reg_model, val_scores in results:
+            model_id = reg_model.model_id
+
+            self.experiment_tracker.update_training_info(
+                model_id,
+                best_epoch=getattr(reg_model, "best_epoch", None),
+                best_val_score=getattr(reg_model, "best_validation_score", None),
+            )
+
+            # 从val_scores中提取MAP和MRR得分
+            map_score = val_scores["MAP"]
+            mrr_score = val_scores["MRR"]
+
+            # 更新模型的训练得分 - 同时记录MAP和MRR
+            self.experiment_tracker.update_result(
+                model_id, f"train_MAP_score", map_score
+            )
+            self.experiment_tracker.update_result(
+                model_id, f"train_MRR_score", mrr_score
+            )
 
             # 存储模型实例和评估结果
-            self.all_reg_models[current_model_id] = current_reg_model
-            self.regression_log[fold_num][current_model_id] = current_score
+            self.all_reg_models[model_id] = reg_model
 
             # 记录最佳模型
-            if (
-                current_score > self.reg_model_score
-                and current_reg_model.heads is not None
-            ):
-                self.reg_model = current_reg_model
-                self.reg_model_id = current_model_id
+            current_score = val_scores[self.metric_type]
+            if current_score > self.reg_model_score and reg_model.heads is not None:
+                self.reg_model = reg_model
+                self.reg_model_id = model_id
                 self.reg_model_score = current_score
-
-        self.best_regression_log[fold_num] = self.reg_model_id
 
         eprint(
             f"Best Regression Model: {self.reg_model_id} {self.metric_type}: {self.reg_model_score}"
@@ -808,17 +819,6 @@ class Adaptive_Process(object):
         参数：
             df: 训练数据集，包含特征和used_in_fix标签
             columns: 特征列名列表
-
-        流程：
-            1. 使用KFold拆分数据为预设折数
-            2. 对每折训练集并行计算所有权重方法的权重向量
-            3. 在验证集评估各权重方法的预测效果（MAP指标）
-            4. 聚合各方法在所有折的平均表现
-
-        结果存储：
-            self.weights更新为最佳方法的平均权重向量
-            self.prescoring_log记录所有方法评估结果
-            self.best_prescoring_log记录最佳方法信息
         """
         if self.use_prescoring_cross_validation:
             # 使用 k 折交叉验证计算权重
@@ -827,45 +827,51 @@ class Adaptive_Process(object):
                 random_state=None,
             )
             # 保存每种方法在每折的结果，包括权重向量和 MAP 得分
-            partial_result_dict: Dict[str, List[Tuple[np.ndarray, float]]] = (
-                defaultdict(list)
-            )
+            partial_result_dict = defaultdict(list)
             for train_index, test_index in kfold.split(df):
                 kdf = df.iloc[train_index]
-                weights: List[Tuple[str, np.ndarray]] = Parallel(n_jobs=-1)(
+                weights = Parallel(n_jobs=-1)(
                     delayed(weights_on_df)(m, kdf, columns)
                     for m in self.weights_methods
                 )
                 kdf_test = df.iloc[test_index]
-                weights_results: List[Tuple[str, Tuple[np.ndarray, float]]] = Parallel(
-                    n_jobs=-1
-                )(
-                    delayed(eval_weights)(m, w, kdf_test, columns, self.metric_type)
+                weights_results = Parallel(n_jobs=-1)(
+                    delayed(eval_weights)(m, w, kdf_test, columns, None)
                     for m, w in weights
                 )
-                weights_results_dict: Dict[str, Tuple[np.ndarray, float]] = dict(
-                    weights_results
-                )
+                weights_results_dict = dict(weights_results)
                 for m_name in weights_results_dict:
                     partial_result_dict[m_name].append(weights_results_dict[m_name])
-            results: Dict[str, Tuple[np.ndarray, float]] = {}
+            results = {}
             for m_name in partial_result_dict:
-                values: List[Tuple[np.ndarray, float]] = partial_result_dict[m_name]
+                values = partial_result_dict[m_name]
                 weights_list: List[np.ndarray] = []
-                eval_list: List[float] = []
+                eval_map_list = []
+                eval_mrr_list = []
+
                 for value in values:
                     weights_list.append(value[0])
-                    eval_list.append(value[1])
+                    scores = value[1]
+                    eval_map_list.append(scores["MAP"])
+                    eval_mrr_list.append(scores["MRR"])
+
                 weights_avg: np.ndarray = np.mean(weights_list, axis=0)
-                eval_avg: float = np.mean(eval_list)
-                results[m_name] = (weights_avg, eval_avg)
-            self.weights = results
+
+                # 创建平均分数字典
+                avg_scores = {
+                    "MAP": np.mean(eval_map_list),
+                    "MRR": np.mean(eval_mrr_list),
+                }
+                results[m_name] = (weights_avg, avg_scores)
         else:
-            results: List[Tuple[str, Tuple[np.ndarray, float]]] = Parallel(n_jobs=-1)(
+            weights_results = Parallel(n_jobs=-1)(
                 delayed(fold_check)(m, df, columns, self.metric_type)
                 for m in self.weights_methods
             )
-            self.weights = dict(results)
+
+            results = dict(weights_results)
+
+        return results
 
     def _train(
         self,
@@ -891,19 +897,12 @@ class Adaptive_Process(object):
             3. 使用交叉验证训练回归模型并评估
 
         返回：
-            tuple: (模型, 平均MAP得分)
+            tuple: (模型, {"MAP": map_score, "MRR": mrr_score})
         """
         score = self.score_method(df, columns, weights)
         fix_score = score + df["used_in_fix"] * np.max(score)
 
         reg_model.fit(df, dependency_df, fix_score)
-
-        # 更新模型训练信息
-        self.model_registry.update_training_info(
-            reg_model.model_id,
-            best_epoch=getattr(reg_model, "best_epoch", None),
-            best_val_score=getattr(reg_model, "best_validation_score", None),
-        )
 
         # 根据配置决定是否使用交叉验证
         if self.use_training_cross_validation:
@@ -915,7 +914,8 @@ class Adaptive_Process(object):
                 random_state=42,
             )
 
-            cv_scores = []
+            cv_map_scores = []
+            cv_mrr_scores = []
 
             # 对每一折执行训练和验证
             for train_idx, val_idx in kf.split(bug_ids):
@@ -946,22 +946,19 @@ class Adaptive_Process(object):
 
                 # 在验证集上评估
                 val_pred = fold_model.predict(val_df, val_dep_df)
-                val_result = val_df[["used_in_fix"]].copy(deep=False)
-                val_result["result"] = val_pred
-                val_score = calculate_metric_results(
-                    val_result, metric_type=self.metric_type
-                )
 
-                cv_scores.append(val_score)
+                scores = evaluate_fold(val_df, val_pred, None)
 
-            # 计算平均交叉验证得分
-            val_score = np.mean(cv_scores)
+                cv_map_scores.append(scores["MAP"])
+                cv_mrr_scores.append(scores["MRR"])
+
+            # 创建包含所有评分的字典
+            val_scores = {"MAP": np.mean(cv_map_scores), "MRR": np.mean(cv_mrr_scores)}
         else:
             predict_score = reg_model.predict(df, dependency_df)
-            val_score = evaluate_fold(df, predict_score, self.metric_type)
+            val_scores = evaluate_fold(df, predict_score, None)
 
-        eprint(f"{reg_model.model_id} 的{self.metric_type}得分: {val_score:.4f}")
-        return reg_model, val_score
+        return reg_model, val_scores
 
     def predict(
         self,
@@ -1000,37 +997,34 @@ class Adaptive_Process(object):
             )
             result = np.dot(X, self.weights)
 
-        self.prediction_log[fold_num] = {}
-
         # 记录权重和模型
-        model_result = np.dot(X, self.weights)
+
         eval_score = evaluate_fold(df, model_result, self.metric_type)
-        self.prediction_log[fold_num]["weights_method"] = eval_score
 
-        # 在模型注册表中记录权重方法的测试结果
+        # 记录权重方法的预测结果
         weights_model_id = f"weights_method_fold{fold_num}"
-        if weights_model_id not in self.model_registry.model_params:
-            # 注册权重方法
-            self.model_registry.model_params[weights_model_id] = {
-                "method": self.best_prescoring_log.get(fold_num, "unknown"),
-                "fold_num": fold_num,
-                "model_type": "weights",
-            }
-            self.model_registry.model_results[weights_model_id] = {}
+        model_result = np.dot(X, self.weights)
 
-        # 更新权重方法的测试结果
-        self.model_registry.update_result(
-            weights_model_id, f"predict_{self.metric_type}_score", eval_score
+        w_scores = evaluate_fold(df, model_result, None)
+
+        self.experiment_tracker.update_result(
+            weights_model_id, f"predict_MAP_score", w_scores["MAP"]
+        )
+        self.experiment_tracker.update_result(
+            weights_model_id, f"predict_MRR_score", w_scores["MRR"]
         )
 
         for model_id, model in self.all_reg_models.items():
             model_result = model.predict(df, df_dependency)
-            eval_score = evaluate_fold(df, model_result, self.metric_type)
-            self.prediction_log[fold_num][model_id] = eval_score
+
+            m_scores = evaluate_fold(df, model_result, None)
 
             # 更新模型注册表中的测试结果
-            self.model_registry.update_result(
-                model_id, f"predict_{self.metric_type}_score", eval_score
+            self.experiment_tracker.update_result(
+                model_id, f"predict_MAP_score", m_scores["MAP"]
+            )
+            self.experiment_tracker.update_result(
+                model_id, f"predict_MRR_score", m_scores["MRR"]
             )
 
         r = df[["used_in_fix"]].copy(deep=False)
@@ -1041,7 +1035,7 @@ class Adaptive_Process(object):
     # ---------------------- 辅助函数 ----------------------
 
 
-def get_skmodels(model_type="auto", model_registry: ModelRegistry = None):
+def get_skmodels(model_type="auto", experiment_tracker: ExperimentTracker = None):
     """
     根据指定的模型类型创建模型列表
 
@@ -1050,20 +1044,20 @@ def get_skmodels(model_type="auto", model_registry: ModelRegistry = None):
             "auto": 返回所有类型的模型（默认）
             "mlp": 只返回MLP模型（heads=None）
             "gat": 只返回GAT模型（heads=数字，use_self_loops_only=False）
-        model_registry: 模型注册表实例
+        experiment_tracker: 模型注册表实例
 
     返回：
         GATRegressor模型列表
     """
     # 数据集大小不同，最优的超参数可能不同
-    hidden_dim = [32, 64, 128, 256]
+    hidden_dim = [64]
     alpha_values = [1e-4]
     loss = ["WeightedMSE"]
     lr_list = [1e-4]
-    penalty = ["l2", None]
-    dropout_rates = [0.4, 0.5]
-    gat_heads = [1, 2, 4]
-    use_self_loops_modes = [False, True]
+    penalty = ["l2"]
+    dropout_rates = [0.4]
+    gat_heads = [2]
+    use_self_loops_modes = [False]
 
     # 根据模型类型配置heads和use_self_loops_modes参数
     if model_type == "mlp":
@@ -1103,8 +1097,8 @@ def get_skmodels(model_type="auto", model_registry: ModelRegistry = None):
     ]
 
     # 注册模型到模型注册表
-    if model_registry is not None:
-        list(map(model_registry.register_model, models))
+    if experiment_tracker is not None:
+        list(map(experiment_tracker.register_model, models))
 
     # 输出模型数量信息
     eprint(f"创建了 {len(models)} 个模型，当前类型: {model_type}")
@@ -1258,46 +1252,10 @@ def main():
     result_dir = f"{file_prefix}_{ptemplate.model_type}_{results_timestamp}"
     os.makedirs(result_dir, exist_ok=True)
 
-    # 保存模型注册表数据 (新格式)
-    ptemplate.model_registry.to_json(
+    # 保存模型注册表数据
+    ptemplate.experiment_tracker.to_json(
         os.path.join(result_dir, f"{ptemplate.name}_models_registry.json")
     )
-
-    # 保存训练时间统计
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_training_time.json"), "w"
-    ) as time_file:
-        json.dump(ptemplate.training_time_stats, time_file, indent=4)
-
-    # 保存权重方法评估日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_prescoring_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.prescoring_log, file, indent=4)
-
-    # 保存回归模型评估日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_regression_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.regression_log, file, indent=4)
-
-    # 保存预测结果日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_prediction_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.prediction_log, file, indent=4)
-
-    # 保存最佳权重方法日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_best_prescoring_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.best_prescoring_log, file, indent=4)
-
-    # 保存最佳模型日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_best_regression_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.best_regression_log, file, indent=4)
 
     # 保存模型训练结果指标
     with open(
