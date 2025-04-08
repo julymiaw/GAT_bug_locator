@@ -488,7 +488,7 @@ class GATRegressor:
                 # 只有存在真实修复文件(y_true>0)的数据才有评估意义
                 if np.any(y_true > 0):
                     n_files = len(y_true)
-                    bug_id = data.bug_id.item()  # 获取当前bug的ID
+                    bug_id = data.bug_id  # 获取当前bug的ID
 
                     # 创建包含结果和标签的DataFrame
                     temp_df = pd.DataFrame(
