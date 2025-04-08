@@ -380,7 +380,7 @@ class GATRegressor:
             # 验证阶段 - 早停检查
             if self.early_stop and val_data:
                 self.model.eval()
-                val_score = self._evaluate_validation(val_data, self.metric_type)
+                val_score = self._evaluate_validation(val_data)
                 self.model.train()
 
                 if val_score > best_val_score:
