@@ -22,6 +22,8 @@ import json
 import numpy as np
 import pandas as pd
 
+from GATRegressor import GATRegressor
+
 
 class ExperimentTracker:
     """实验跟踪管理器，用于记录机器学习实验的完整周期"""
@@ -45,7 +47,7 @@ class ExperimentTracker:
             "experiment_name": "adaptive_gat_experiment",
         }
 
-    def register_model(self, model, fold_num):
+    def register_model(self, model: GATRegressor, fold_num):
         """
         注册模型及其参数
 
@@ -72,20 +74,20 @@ class ExperimentTracker:
 
         # 自动从模型实例提取参数
         params = {
-            "hidden_dim": getattr(model, "hidden_dim", None),
-            "heads": getattr(model, "heads", None),
-            "dropout": getattr(model, "dropout", None),
-            "alpha": getattr(model, "alpha", None),
-            "loss": getattr(model, "loss", None),
-            "penalty": getattr(model, "penalty", None),
-            "lr": getattr(model, "lr", None),
-            "use_self_loops_only": getattr(model, "use_self_loops_only", None),
-            "early_stop": getattr(model, "early_stop", None),
-            "max_iter": getattr(model, "max_iter", None),
-            "n_iter_no_change": getattr(model, "n_iter_no_change", None),
-            "shuffle": getattr(model, "shuffle", None),
-            "validation_fraction": getattr(model, "validation_fraction", None),
-            "model_type": "MLP" if getattr(model, "heads", None) is None else "GAT",
+            "hidden_dim": model.hidden_dim,
+            "heads": model.heads,
+            "dropout": model.dropout,
+            "alpha": model.alpha,
+            "loss": model.loss,
+            "penalty": model.penalty,
+            "lr": model.lr,
+            "use_self_loops_only": model.use_self_loops_only,
+            "early_stop": model.early_stop,
+            "max_iter": model.max_iter,
+            "n_iter_no_change": model.n_iter_no_change,
+            "shuffle": model.shuffle,
+            "validation_fraction": model.validation_fraction,
+            "model_type": "MLP" if model.heads is None else "GAT",
             "fold_num": fold_num,
         }
 

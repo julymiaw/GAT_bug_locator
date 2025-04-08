@@ -102,7 +102,7 @@ class AdaptiveGATEvaluator:
 
                 weights_methods_by_fold[fold_num] = {
                     "fold": fold_num,
-                    "model_name": model_id,
+                    "model_id": model_id,
                     "train_score": next(
                         (results[k] for k in results if k.startswith("train_")), None
                     ),
@@ -136,21 +136,14 @@ class AdaptiveGATEvaluator:
             # 创建模型信息对象
             model_info = {
                 "fold": fold_num,
-                "model_name": model_id,
+                "model_id": model_id,
                 "train_score": train_score,
                 "test_score": test_score,
                 "is_best": False,  # 稍后再确定最佳模型
                 "model_category": model_category,
-                "loss_type": params.get("loss", "unknown"),
-                "hidden_dim": params.get("hidden_dim", 0),
-                "penalty": params.get("penalty", "none"),
-                "heads": params.get("heads", "nohead"),
-                "alpha": params.get("alpha", 0.0),
-                "dropout": params.get("dropout", 0.0),
-                "learning_rate": params.get("lr", 0.0),
-                "use_self_loops": params.get("use_self_loops_only", False),
-                "shuffle": params.get("shuffle", False),
             }
+
+            model_info.update(params)
 
             models_by_fold[fold_num].append(model_info)
 
@@ -196,12 +189,10 @@ class AdaptiveGATEvaluator:
                     model["should_filter"] = False
 
                 # 检查配对模型的过滤状态
-                paired_model_name = self.paired_models[fold_num].get(
-                    model["model_name"]
-                )
-                if paired_model_name:
+                paired_model_id = self.paired_models[fold_num].get(model["model_id"])
+                if paired_model_id:
                     paired_model = next(
-                        (m for m in models if m["model_name"] == paired_model_name),
+                        (m for m in models if m["model_id"] == paired_model_id),
                         None,
                     )
                     if paired_model and paired_model.get("should_filter", False):
@@ -250,22 +241,21 @@ class AdaptiveGATEvaluator:
             for realedge_model in realedge_models:
                 # 检查超参数是否匹配
                 if (
-                    selfloop_model["loss_type"] == realedge_model["loss_type"]
+                    selfloop_model["loss"] == realedge_model["loss"]
                     and selfloop_model["hidden_dim"] == realedge_model["hidden_dim"]
                     and selfloop_model["penalty"] == realedge_model["penalty"]
                     and selfloop_model["alpha"] == realedge_model["alpha"]
                     and selfloop_model["dropout"] == realedge_model["dropout"]
-                    and selfloop_model["learning_rate"]
-                    == realedge_model["learning_rate"]
+                    and selfloop_model["lr"] == realedge_model["lr"]
                     and selfloop_model["heads"] == realedge_model["heads"]
                 ):
 
                     # 建立双向映射
-                    paired_models[selfloop_model["model_name"]] = realedge_model[
-                        "model_name"
+                    paired_models[selfloop_model["model_id"]] = realedge_model[
+                        "model_id"
                     ]
-                    paired_models[realedge_model["model_name"]] = selfloop_model[
-                        "model_name"
+                    paired_models[realedge_model["model_id"]] = selfloop_model[
+                        "model_id"
                     ]
                     break
 
@@ -298,7 +288,7 @@ class AdaptiveGATEvaluator:
                     best_idx = fold_nn_models["train_score"].idxmax()
                     self.model_performance_df.loc[best_idx, "is_best"] = True
                     print(
-                        f"  折 {fold}: 标记 {self.model_performance_df.loc[best_idx, 'model_name']} 为新的最佳模型"
+                        f"  折 {fold}: 标记 {self.model_performance_df.loc[best_idx, 'model_id']} 为新的最佳模型"
                     )
                 else:
                     print(f"  折 {fold}: 没有找到非权重模型")
@@ -314,7 +304,7 @@ class AdaptiveGATEvaluator:
             "过滤掉的模型数": self.filtered_stats.get("unconverged_models", 0)
             + self.filtered_stats.get("underperforming_models", 0),
             "最佳模型fold": best_models["fold"].tolist(),
-            "最佳模型": best_models["model_name"].tolist(),
+            "最佳模型": best_models["model_id"].tolist(),
             "最佳模型训练得分": best_models["train_score"].tolist(),
             "最佳模型测试得分": best_models["test_score"].tolist(),
         }
@@ -340,10 +330,10 @@ class AdaptiveGATEvaluator:
         # 要分析的参数列表
         params_to_analyze = [
             "heads",
-            "loss_type",
+            "loss",
             "hidden_dim",
             "penalty",
-            "learning_rate",
+            "lr",
             "alpha",
             "dropout",
             "early_stop",
@@ -355,7 +345,6 @@ class AdaptiveGATEvaluator:
             ("heads", "hidden_dim"),  # 注意力头数和隐藏层维度的组合
             ("early_stop", "n_iter_no_change"),  # 早停策略和无改进轮数的组合
             ("penalty", "alpha"),  # 正则化方法和正则化强度的组合
-            ("learning_rate", "penalty"),  # 学习率和惩罚类型的组合
         ]
 
         # 创建参数影响分析目录
@@ -364,11 +353,11 @@ class AdaptiveGATEvaluator:
 
         # 分析每个参数
         param_impact = {}
-
         nn_models_df = self.model_performance_df[
             self.model_performance_df["model_category"] != "baseline_weights"
         ]
 
+        # 1. 单参数分析
         for param in params_to_analyze:
             if param not in nn_models_df.columns:
                 print(f"⚠ 警告：参数 {param} 不在数据集列中，跳过分析")
@@ -380,7 +369,6 @@ class AdaptiveGATEvaluator:
 
             # 计算每个参数值的平均性能
             impact_data = []
-            unique_values = nn_models_df[param].unique()
 
             for value in unique_values:
                 if not pd.isna(value):
@@ -414,19 +402,81 @@ class AdaptiveGATEvaluator:
             # 保存参数影响数据
             if impact_data:
                 param_impact[param] = impact_data
-
                 # 创建参数影响图表
                 self.plot_parameter_impact(param, impact_data, param_dir)
             else:
                 print(f"⚠ 警告：参数 {param} 没有有效数据可分析")
 
+        # 2. 参数组合分析
+        combo_impact = {}
+
+        for param1, param2 in param_combinations:
+            if param1 not in nn_models_df.columns or param2 not in nn_models_df.columns:
+                print(
+                    f"⚠ 警告：参数组合 {param1}-{param2} 中有参数不在数据集列中，跳过分析"
+                )
+                continue
+
+            # 获取每个参数的唯一值
+            unique_values1 = [
+                v for v in nn_models_df[param1].unique() if not pd.isna(v)
+            ]
+            unique_values2 = [
+                v for v in nn_models_df[param2].unique() if not pd.isna(v)
+            ]
+
+            if len(unique_values1) <= 1 or len(unique_values2) <= 1:
+                continue
+
+            # 为此组合创建数据
+            combo_data = []
+            # 遍历所有可能的参数组合
+            for val1 in unique_values1:
+                for val2 in unique_values2:
+                    # 找到具有此参数组合的模型
+                    combo_subset = nn_models_df[
+                        (nn_models_df[param1] == val1) & (nn_models_df[param2] == val2)
+                    ]
+
+                    if not combo_subset.empty:
+                        combo_data.append(
+                            {
+                                f"{param1}": val1,
+                                f"{param2}": val2,
+                                "combo_label": f"{val1}-{val2}",
+                                "count": len(combo_subset),
+                                "mean_train": combo_subset["train_score"].mean(),
+                                "mean_test": combo_subset["test_score"].mean(),
+                                "best_count": combo_subset["is_best"].sum(),
+                            }
+                        )
+
+            if combo_data:
+                combo_key = f"{param1}_{param2}"
+                combo_impact[combo_key] = combo_data
+                self.plot_parameter_combination(param1, param2, combo_data, param_dir)
+            else:
+                print(f"⚠ 警告：参数组合 {param1}-{param2} 没有有效数据可分析")
+
         # 保存参数影响摘要
         with open(
             os.path.join(self.output_dir, "parameter_impact_summary.json"), "w"
         ) as f:
-            json.dump(param_impact, f, indent=4, ensure_ascii=False, cls=NumpyEncoder)
+            json.dump(
+                {
+                    "single_parameters": param_impact,
+                    "parameter_combinations": combo_impact,
+                },
+                f,
+                indent=4,
+                ensure_ascii=False,
+                cls=NumpyEncoder,
+            )
 
-        return param_impact
+        return {
+            "single_parameters": param_impact,
+            "parameter_combinations": combo_impact,
+        }
 
     def plot_parameter_impact(
         self, param: str, impact_data: List[Dict], output_dir: str
@@ -444,8 +494,7 @@ class AdaptiveGATEvaluator:
         impact_df["param_label"] = impact_df["param_value"].astype(str)
 
         # 排序
-        if param in ["hidden_dim", "learning_rate", "alpha", "dropout"]:
-            impact_df = impact_df.sort_values(by="param_value")
+        impact_df = impact_df.sort_values(by="param_value")
 
         # 绘制过拟合对比图
         plt.figure(figsize=(12, 6))
@@ -466,6 +515,55 @@ class AdaptiveGATEvaluator:
         plt.grid(axis="y", linestyle="--", alpha=0.7)
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"{param}_train_test_compare.png"))
+        plt.close()
+
+    def plot_parameter_combination(
+        self, param1: str, param2: str, combo_data: List[Dict], output_dir: str
+    ):
+        """
+        绘制参数组合的柱状图
+
+        参数:
+            param1: 第一个参数名称
+            param2: 第二个参数名称
+            combo_data: 组合分析数据列表
+            output_dir: 输出目录
+        """
+        if not combo_data:
+            return
+
+        # 将列表转换为DataFrame
+        combo_df = pd.DataFrame(combo_data)
+
+        # 创建组合标签
+        combo_df["combined_label"] = combo_df.apply(
+            lambda row: f"{row[param1]}-{row[param2]}", axis=1
+        )
+
+        # 按测试分数降序排序
+        combo_df = combo_df.sort_values(by="mean_test", ascending=False)
+
+        # 绘制柱状图
+        plt.figure(figsize=(15, 8))
+
+        x = np.arange(len(combo_df))
+        width = 0.35
+
+        # 训练和测试分数
+        plt.bar(x - width / 2, combo_df["mean_train"], width, label="训练得分")
+        plt.bar(x + width / 2, combo_df["mean_test"], width, label="测试得分")
+
+        # 添加标签和图例
+        plt.xlabel(f"{param1} - {param2} 组合")
+        plt.ylabel("平均得分")
+        plt.title(f"{param1}和{param2}参数组合对性能的影响")
+        plt.xticks(x, combo_df["combined_label"], rotation=45, ha="right")
+        plt.legend()
+        plt.grid(axis="y", linestyle="--", alpha=0.7)
+        plt.tight_layout()
+
+        # 保存图片
+        plt.savefig(os.path.join(output_dir, f"{param1}_{param2}_bar_chart.png"))
         plt.close()
 
     def analyze_self_loops_effect(self):
@@ -496,22 +594,22 @@ class AdaptiveGATEvaluator:
 
             # 检查是否有配对信息
             for _, self_loop_model in fold_self_loop.iterrows():
-                model_name = self_loop_model["model_name"]
+                model_id = self_loop_model["model_id"]
 
                 # 获取对应的真实边模型名称
-                if model_name in self.paired_models[fold]:
-                    real_edge_name = self.paired_models[fold][model_name]
+                if model_id in self.paired_models[fold]:
+                    real_edge_name = self.paired_models[fold][model_id]
 
                     # 查找对应的真实边模型
                     real_edge_models = fold_real_edge[
-                        fold_real_edge["model_name"] == real_edge_name
+                        fold_real_edge["model_id"] == real_edge_name
                     ]
 
                     if not real_edge_models.empty:
                         real_edge_model = real_edge_models.iloc[0]
 
                         pair_info = {
-                            "self_loop_model": model_name,
+                            "self_loop_model": model_id,
                             "real_edge_model": real_edge_name,
                             "self_loop_train": self_loop_model["train_score"],
                             "real_edge_train": real_edge_model["train_score"],
@@ -657,11 +755,11 @@ class AdaptiveGATEvaluator:
         for fold, fold_data in fold_comparisons.items():
             for pair in fold_data:
                 self_loop_model = all_models[
-                    (all_models["model_name"] == pair["self_loop_model"])
+                    (all_models["model_id"] == pair["self_loop_model"])
                     & (all_models["fold"] == fold)
                 ]
                 real_edge_model = all_models[
-                    (all_models["model_name"] == pair["real_edge_model"])
+                    (all_models["model_id"] == pair["real_edge_model"])
                     & (all_models["fold"] == fold)
                 ]
 
@@ -809,7 +907,7 @@ class AdaptiveGATEvaluator:
                 "评估时间": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "评估目录": self.log_dir,
                 "模型总数": len(self.model_performance_df),
-                "最佳模型": best_models["model_name"].tolist(),
+                "最佳模型": best_models["model_id"].tolist(),
                 "最佳模型测试得分": best_models["test_score"].tolist(),
                 "最佳模型类型": {
                     "baseline_mlp": "基线MLP模型",
