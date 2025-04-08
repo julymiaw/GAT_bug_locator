@@ -203,6 +203,7 @@ class GATRegressor:
         use_self_loops_only=False,
         early_stop=False,
         validation_fraction=0.2,
+        metric_type="MRR",
     ):
         """
         初始化回归器
@@ -227,6 +228,7 @@ class GATRegressor:
             use_self_loops_only: 是否仅使用自环边
             early_stop: 是否启用早停机制
             validation_fraction: 用于早停的验证集比例
+            metric_type: 评估指标类型，可选值为"MAP"或"MRR"
         """
         self.node_feature_columns = node_feature_columns
         self.dependency_feature_columns = dependency_feature_columns
@@ -247,8 +249,9 @@ class GATRegressor:
         self.use_self_loops_only = use_self_loops_only
         self.early_stop = early_stop
         self.validation_fraction = validation_fraction
+        self.metric_type = metric_type
 
-        # 添加模型ID属性
+        # 模型注册时进行初始化
         self.model_id: str = None
 
         # 初始化模型和累积器
@@ -264,7 +267,7 @@ class GATRegressor:
             torch.manual_seed(self.random_state)
             np.random.seed(self.random_state)
 
-    def fit(self, node_features, edge_features, score, metric_type="MRR"):
+    def fit(self, node_features, edge_features, score):
         """
         训练模型
 
@@ -272,7 +275,6 @@ class GATRegressor:
             node_features: 包含节点特征的DataFrame
             edge_features: 包含边特征的DataFrame
             score: 目标分数，形状与node_features中的节点数匹配
-            metric_type: 评估指标类型，默认为"MRR"
 
         返回:
             self: 训练后的模型
@@ -378,7 +380,7 @@ class GATRegressor:
             # 验证阶段 - 早停检查
             if self.early_stop and val_data:
                 self.model.eval()
-                val_score = self._evaluate_validation(val_data, metric_type)
+                val_score = self._evaluate_validation(val_data, self.metric_type)
                 self.model.train()
 
                 if val_score > best_val_score:
@@ -497,13 +499,12 @@ class GATRegressor:
         else:
             return nn.MSELoss()  # 默认使用MSE
 
-    def _evaluate_validation(self, val_data, metric_type="MRR"):
+    def _evaluate_validation(self, val_data):
         """
         评估验证集性能，返回评估指标
 
         参数:
             val_data: 验证集数据
-            metric_type: 使用的评估指标类型，默认"MRR"
 
         返回:
             float: 平均性能得分(越高越好)
@@ -537,11 +538,8 @@ class GATRegressor:
             if not temp_dfs:
                 return 0.0
 
-            # 合并所有临时DataFrame
             all_bugs_df = pd.concat(temp_dfs)
-
-            # 直接使用metrics.py中的现有函数计算评估指标
-            score = calculate_metric_results(all_bugs_df, metric_type=metric_type)
+            score = calculate_metric_results(all_bugs_df, metric_type=self.metric_type)
 
             return score
 
@@ -601,15 +599,11 @@ class Adaptive_Process(object):
         - 使用joblib并行化权重计算和模型评估过程
     """
 
-    def __init__(self, model_type="auto", metric_type="MRR"):
+    def __init__(self, metric_type="MRR"):
         """
         初始化方法，配置所有可用算法组件
 
         参数：
-            model_type: 选择使用的模型类型
-                "auto": 自动选择性能最佳的模型（默认）
-                "mlp": 只使用MLP模型（heads=None）
-                "gat": 只使用GAT模型（heads=数字，use_self_loops_only=False）
             metric_type: 使用的评估指标类型，可选值:
                 "MAP": 平均精确率（Mean Average Precision）
                 "MRR": 平均倒数排名（Mean Reciprocal Rank）
@@ -617,12 +611,6 @@ class Adaptive_Process(object):
         # region 算法组件配置
         # 特征权重计算方法列表（统计检验/树模型/降维方法等）
         self.weights_methods = get_weights_methods()
-
-        # 指定模型类型
-        self.model_type = model_type
-        if model_type not in ["auto", "mlp", "gat"]:
-            eprint(f"警告: 未知的模型类型 '{model_type}'，使用 'auto' 模式")
-            self.model_type = "auto"
 
         # 指定评估指标类型
         self.metric_type = metric_type
@@ -632,7 +620,7 @@ class Adaptive_Process(object):
 
         # 回归模型集合
         self.reg_models: List[GATRegressor] = []
-        self.reg_models.extend(get_skmodels(self.model_type))
+        self.reg_models.extend(get_skmodels(self.metric_type))
 
         # 评分方法（标准评分）
         self.score_method = normal_score
@@ -873,8 +861,7 @@ class Adaptive_Process(object):
                 results[m_name] = (weights_avg, avg_scores)
         else:
             weights_results = Parallel(n_jobs=-1)(
-                delayed(fold_check)(m, df, columns, self.metric_type)
-                for m in self.weights_methods
+                delayed(fold_check)(m, df, columns, None) for m in self.weights_methods
             )
 
             results = dict(weights_results)
@@ -1041,40 +1028,34 @@ class Adaptive_Process(object):
     # ---------------------- 辅助函数 ----------------------
 
 
-def get_skmodels(model_type="auto", experiment_tracker: ExperimentTracker = None):
+def get_skmodels(metric_type="MRR"):
     """
     根据指定的模型类型创建模型列表
 
     参数：
-        model_type: 模型类型
-            "auto": 返回所有类型的模型（默认）
-            "mlp": 只返回MLP模型（heads=None）
-            "gat": 只返回GAT模型（heads=数字，use_self_loops_only=False）
-        experiment_tracker: 模型注册表实例
+        metric_type: 评估指标类型，默认为"MRR"
 
     返回：
         GATRegressor模型列表
     """
     # 数据集大小不同，最优的超参数可能不同
-    hidden_dim = [64]
-    alpha_values = [1e-4]
+    alpha_values = [1e-3, 1e-4]
     loss = ["WeightedMSE"]
-    lr_list = [1e-4]
-    penalty = ["l2"]
-    dropout_rates = [0.4]
-    gat_heads = [2]
-    use_self_loops_modes = [False]
-
-    # 根据模型类型配置heads和use_self_loops_modes参数
-    if model_type == "mlp":
-        # 只使用MLP模型
-        heads = [None]
-    elif model_type == "gat":
-        # 只使用GAT模型
-        heads = gat_heads
-    else:  # "auto"或其他值
-        # 使用所有类型的模型
-        heads = [None] + gat_heads
+    lr_list = [1e-3]
+    penalty = ["l2", None]
+    dropout_rates = [0.2]
+    use_self_loops_modes = [False, True]
+    early_stop_configs = [
+        (False, 5),
+    ]
+    head_dim_configs = [
+        (None, 32),  # MLP模式 - 中等维度
+        (None, 64),  # MLP模式 - 大维度
+        (1, 32),  # GAT单头 - 中等维度
+        (1, 64),  # GAT单头 - 大维度
+        (2, 32),  # GAT双头 - 中等维度
+        (4, 16),  # GAT四头 - 小维度（控制总体参数量）
+    ]
 
     models = [
         GATRegressor(
@@ -1088,26 +1069,26 @@ def get_skmodels(model_type="auto", experiment_tracker: ExperimentTracker = None
             penalty=p,
             dropout=dr,
             alpha=a,
+            early_stop=es,
+            n_iter_no_change=nic,
+            metric_type=metric_type,
         )
-        for hd, h, ls, lr, p, dr, a, loop in product(
-            hidden_dim,
-            heads,
+        for (h, hd), ls, lr, p, dr, a, loop, (es, nic) in product(
+            head_dim_configs,
             loss,
             lr_list,
             penalty,
             dropout_rates,
             alpha_values,
             use_self_loops_modes,
+            early_stop_configs,
         )
-        if not (h is None and loop is True)
+        if not (h is None and loop is True)  # MLP模式下不使用自环
+        and not (p is None and a != alpha_values[0])  # 无正则化时仅使用一个alpha值
     ]
 
-    # 注册模型到模型注册表
-    if experiment_tracker is not None:
-        list(map(experiment_tracker.register_model, models))
-
     # 输出模型数量信息
-    eprint(f"创建了 {len(models)} 个模型，当前类型: {model_type}")
+    eprint(f"创建了 {len(models)} 个模型")
 
     return models
 
@@ -1194,6 +1175,7 @@ def clone_regressor(reg_model):
         use_self_loops_only=reg_model.use_self_loops_only,
         early_stop=reg_model.early_stop,
         validation_fraction=reg_model.validation_fraction,
+        metric_type=reg_model.metric_type,
     )
 
 
@@ -1262,7 +1244,7 @@ def main():
     )
 
     results_timestamp = time.strftime("%Y%m%d%H%M%S")
-    result_dir = f"{file_prefix}_{ptemplate.model_type}_{results_timestamp}"
+    result_dir = f"{file_prefix}_{results_timestamp}"
     os.makedirs(result_dir, exist_ok=True)
 
     # 保存模型注册表数据

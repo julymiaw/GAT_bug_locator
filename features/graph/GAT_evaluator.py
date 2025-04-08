@@ -19,7 +19,7 @@ import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from typing import Dict, List, Any
+from typing import Dict, List
 import argparse
 from train_utils import eprint
 
@@ -346,6 +346,16 @@ class AdaptiveGATEvaluator:
             "learning_rate",
             "alpha",
             "dropout",
+            "early_stop",
+            "n_iter_no_change",
+        ]
+
+        # 要分析的参数组合列表
+        param_combinations = [
+            ("heads", "hidden_dim"),  # 注意力头数和隐藏层维度的组合
+            ("early_stop", "n_iter_no_change"),  # 早停策略和无改进轮数的组合
+            ("penalty", "alpha"),  # 正则化方法和正则化强度的组合
+            ("learning_rate", "penalty"),  # 学习率和惩罚类型的组合
         ]
 
         # 创建参数影响分析目录
