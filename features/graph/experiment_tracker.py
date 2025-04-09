@@ -82,11 +82,9 @@ class ExperimentTracker:
             "penalty": model.penalty,
             "lr": model.lr,
             "use_self_loops_only": model.use_self_loops_only,
-            "early_stop": model.early_stop,
             "max_iter": model.max_iter,
             "n_iter_no_change": model.n_iter_no_change,
             "shuffle": model.shuffle,
-            "validation_fraction": model.validation_fraction,
             "model_type": "MLP" if model.heads is None else "GAT",
             "fold_num": fold_num,
         }
@@ -113,7 +111,7 @@ class ExperimentTracker:
 
         self.model_results[model_id][metric_name] = metric_value
 
-    def update_training_info(self, model_id, best_epoch=None, best_val_score=None):
+    def update_training_info(self, model_id, best_epoch=None):
         """
         更新模型训练信息
 
@@ -127,9 +125,6 @@ class ExperimentTracker:
 
         if best_epoch is not None:
             self.model_results[model_id]["best_epoch"] = best_epoch
-
-        if best_val_score is not None:
-            self.model_results[model_id]["best_validation_score"] = best_val_score
 
     def record_training_time(self, fold_num, time_seconds, bugs_count, files_count):
         """

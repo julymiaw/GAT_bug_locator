@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from typing import Annotated, List
+from typing import List
 import torch
 import torch.nn as nn
 from torch_geometric.nn import GATConv
@@ -10,7 +10,7 @@ from torch_geometric.data import Data
 
 from train_utils import eprint
 from ranking_losses import WeightedRankMSELoss
-from metrics import calculate_metric_results
+from metrics import calculate_metric_results, evaluate_fold
 
 
 class GATModule(nn.Module):
@@ -165,8 +165,6 @@ class GATRegressor:
         warm_start=False,
         n_iter_no_change=5,
         use_self_loops_only=False,
-        early_stop=False,
-        validation_fraction=0.2,
         metric_type="MRR",
     ):
         """
@@ -190,8 +188,6 @@ class GATRegressor:
             warm_start: 是否使用之前的解作为初始化
             n_iter_no_change: 用于提前停止的无改进迭代次数
             use_self_loops_only: 是否仅使用自环边
-            early_stop: 是否启用早停机制
-            validation_fraction: 用于早停的验证集比例
             metric_type: 评估指标类型，可选值为"MAP"或"MRR"
         """
         self.node_feature_columns = node_feature_columns
@@ -211,8 +207,6 @@ class GATRegressor:
         self.warm_start = warm_start
         self.n_iter_no_change = n_iter_no_change
         self.use_self_loops_only = use_self_loops_only
-        self.early_stop = early_stop
-        self.validation_fraction = validation_fraction
         self.metric_type = metric_type
 
         # 模型注册时进行初始化
@@ -245,33 +239,17 @@ class GATRegressor:
         """
         # 复制节点特征DataFrame并添加分数
         node_features = node_features.copy(deep=False)
-        node_features["score"] = score
+
+        weight_score = evaluate_fold(node_features, score, self.metric_type)
+
+        min_acceptable_score = weight_score * 0.99  # 允许1%的容差
+
+        # 添加修正后的分数用于训练
+        fix_score = score + node_features["used_in_fix"] * np.max(score)
+        node_features["score"] = fix_score
 
         # 准备数据
         data_list = self._prepare_data(node_features, edge_features)
-
-        # 如果启用了早停，需要分割训练集和验证集
-        if self.early_stop and len(data_list) > 5:  # 确保有足够的数据用于分割
-            # 按bug ID划分，保持同一bug的数据在同一集合中
-            bug_ids = list(set(data.bug_id for data in data_list))
-            np.random.shuffle(bug_ids)
-
-            # 计算验证集大小
-            val_size = max(1, int(len(bug_ids) * self.validation_fraction))
-            val_bugs = bug_ids[:val_size]
-            train_bugs = bug_ids[val_size:]
-
-            # 分割数据
-            train_data = [data for data in data_list if data.bug_id in train_bugs]
-            val_data = [data for data in data_list if data.bug_id in val_bugs]
-
-            # 如果验证集为空，使用一部分训练集作为验证集
-            if not val_data and train_data:
-                val_data = [train_data[-1]]
-                train_data = train_data[:-1]
-        else:
-            train_data = data_list
-            val_data = []
 
         # 如果不使用warm_start或第一次训练，则重新初始化模型
         if not self.warm_start or self.model is None:
@@ -299,21 +277,19 @@ class GATRegressor:
         else:
             self.optimizer = AdamW(self.model.parameters(), lr=self.lr)
 
-        # 加载数据到设备
-        train_data = [data.to(self.device) for data in train_data]
-        val_data = [data.to(self.device) for data in val_data] if val_data else []
-
-        # 确保train_data不为空
+        # 加载数据
+        train_data = [data.to(self.device) for data in data_list]
         if not train_data:
             eprint("错误: 没有有效的训练数据")
             return self
 
         # 训练循环
         self.model.train()
-        best_val_score = -float("inf")  # 用于早停的最佳验证分数
         best_train_loss = float("inf")  # 用于损失收敛的最佳训练损失
         no_improvement_count = 0
         best_weights = None
+        exceeded_weight_score = False
+        current_score = 0.0
 
         for epoch in range(self.max_iter):
             # 如果需要，打乱数据
@@ -324,58 +300,41 @@ class GATRegressor:
             total_loss = 0
             self.optimizer.zero_grad()
 
+            predictions = np.zeros(len(score))
+            idx = 0
+
             for data in train_data:
-                # 前向传播
                 out = self.model(data.x, data.edge_index, data.edge_attr)
-                # 计算损失
                 loss = self.criterion(out, data.y)
-                # 反向传播
                 loss.backward()
                 total_loss += loss.item()
 
-            # 更新参数
-            self.optimizer.step()
+                pred = out.detach().cpu().numpy().flatten()
+                predictions[idx : idx + len(pred)] = pred
+                idx += len(pred)
 
+            self.optimizer.step()
             avg_train_loss = total_loss / len(train_data)
 
-            # 早停检查 -----------------------------------------------
-            improved = False
-
-            # 验证阶段 - 早停检查
-            if self.early_stop and val_data:
-                self.model.eval()
-                val_score = self._evaluate_validation(val_data)
-                self.model.train()
-
-                if val_score > best_val_score:
-                    best_val_score = val_score
-                    improved = True
-                    self.best_validation_score = val_score
-                    self.best_epoch = epoch
-                    best_weights = {
-                        name: param.clone().detach()
-                        for name, param in self.model.state_dict().items()
-                    }
-            elif epoch == 0 or best_train_loss - avg_train_loss > self.tol:
+            # 检查损失是否有改进
+            if epoch == 0 or best_train_loss - avg_train_loss > self.tol:
                 best_train_loss = avg_train_loss
-                improved = True
+                no_improvement_count = 0
                 self.best_epoch = epoch
                 best_weights = {
                     name: param.clone().detach()
                     for name, param in self.model.state_dict().items()
                 }
 
-            # 更新无改进计数
-            if improved:
-                no_improvement_count = 0
+                current_score = evaluate_fold(
+                    node_features, predictions, self.metric_type
+                )
+                exceeded_weight_score = current_score >= min_acceptable_score
             else:
                 no_improvement_count += 1
 
             # 检查是否应该提前停止
-            if (
-                self.n_iter_no_change is not None
-                and no_improvement_count >= self.n_iter_no_change
-            ):
+            if no_improvement_count >= self.n_iter_no_change and exceeded_weight_score:
                 break
 
         # 恢复最佳权重
@@ -462,50 +421,6 @@ class GATRegressor:
             return WeightedRankMSELoss(fix_weight=5.0)
         else:
             return nn.MSELoss()  # 默认使用MSE
-
-    def _evaluate_validation(self, val_data):
-        """
-        评估验证集性能，返回评估指标
-
-        参数:
-            val_data: 验证集数据
-
-        返回:
-            float: 平均性能得分(越高越好)
-        """
-        with torch.no_grad():
-            # 为每个bug创建一个临时DataFrame，最后合并
-            temp_dfs = []
-
-            for data in val_data:
-                # 获取预测值
-                out = self.model(data.x, data.edge_index, data.edge_attr)
-
-                # 获取真实标签和预测值
-                y_true = data.y.cpu().numpy().flatten()
-                y_pred = out.cpu().numpy().flatten()
-
-                # 只有存在真实修复文件(y_true>0)的数据才有评估意义
-                if np.any(y_true > 0):
-                    n_files = len(y_true)
-                    bug_id = data.bug_id  # 获取当前bug的ID
-
-                    # 创建包含结果和标签的DataFrame
-                    temp_df = pd.DataFrame(
-                        {"result": y_pred, "used_in_fix": (y_true > 0).astype(float)},
-                        index=pd.Index([bug_id] * n_files, name="bug_id"),
-                    )
-
-                    temp_dfs.append(temp_df)
-
-            # 如果没有找到有修复文件的bug，返回0
-            if not temp_dfs:
-                return 0.0
-
-            all_bugs_df = pd.concat(temp_dfs)
-            score = calculate_metric_results(all_bugs_df, metric_type=self.metric_type)
-
-            return score
 
     def predict(self, node_features, edge_features):
         """

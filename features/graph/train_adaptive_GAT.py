@@ -235,9 +235,7 @@ class Adaptive_Process(object):
             model_id = reg_model.model_id
 
             self.experiment_tracker.update_training_info(
-                model_id,
-                best_epoch=getattr(reg_model, "best_epoch", None),
-                best_val_score=getattr(reg_model, "best_validation_score", None),
+                model_id, best_epoch=reg_model.best_epoch
             )
 
             # 从val_scores中提取MAP和MRR得分
@@ -354,9 +352,8 @@ class Adaptive_Process(object):
             tuple: (模型, {"MAP": map_score, "MRR": mrr_score})
         """
         score = self.score_method(df, columns, weights)
-        fix_score = score + df["used_in_fix"] * np.max(score)
 
-        reg_model.fit(df, dependency_df, fix_score)
+        reg_model.fit(df, dependency_df, score)
 
         # 根据配置决定是否使用交叉验证
         if self.use_training_cross_validation:
@@ -392,11 +389,11 @@ class Adaptive_Process(object):
                 ]
 
                 # 准备训练得分
-                train_fix_score = fix_score[train_mask]
+                train_score = score[train_mask]
 
                 # 训练模型
                 fold_model = clone_regressor(reg_model)
-                fold_model.fit(train_df, train_dep_df, train_fix_score)
+                fold_model.fit(train_df, train_dep_df, train_score)
 
                 # 在验证集上评估
                 val_pred = fold_model.predict(val_df, val_dep_df)
@@ -504,11 +501,7 @@ def get_skmodels(metric_type="MRR"):
     penalty = ["l2"]
     dropout_rates = [0.15, 0.2]
     use_self_loops_modes = [False, True]
-
-    early_stop_configs = [
-        (False, 5),
-        (False, 7),
-    ]
+    n_iter_no_change_list = [5, 7]
 
     head_dim_configs = [
         (None, 64),  # MLP模式 - 大维度
@@ -529,11 +522,10 @@ def get_skmodels(metric_type="MRR"):
             penalty=p,
             dropout=dr,
             alpha=a,
-            early_stop=es,
             n_iter_no_change=nic,
             metric_type=metric_type,
         )
-        for (h, hd), ls, lr, p, dr, a, loop, (es, nic) in product(
+        for (h, hd), ls, lr, p, dr, a, loop, nic in product(
             head_dim_configs,
             loss,
             lr_list,
@@ -541,7 +533,7 @@ def get_skmodels(metric_type="MRR"):
             dropout_rates,
             alpha_values,
             use_self_loops_modes,
-            early_stop_configs,
+            n_iter_no_change_list,
         )
         if not (h is None and loop is True)  # MLP模式下不使用自环
         and not (p is None and a != alpha_values[0])  # 无正则化时仅使用一个alpha值
@@ -633,8 +625,6 @@ def clone_regressor(reg_model):
         warm_start=reg_model.warm_start,
         n_iter_no_change=reg_model.n_iter_no_change,
         use_self_loops_only=reg_model.use_self_loops_only,
-        early_stop=reg_model.early_stop,
-        validation_fraction=reg_model.validation_fraction,
         metric_type=reg_model.metric_type,
     )
 
