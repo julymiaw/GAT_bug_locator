@@ -149,6 +149,58 @@ class ExperimentTracker:
             "seconds_per_file": time_seconds / files_count if files_count > 0 else 0,
         }
 
+    def are_models_matching(self, model_id1, model_id2):
+        """
+        判断两个模型是否是参数匹配的配对模型（一个自环模型，一个真实边模型）
+
+        参数:
+            model_id1: 第一个模型的ID
+            model_id2: 第二个模型的ID
+
+        返回:
+            bool: 如果模型参数匹配（除model_id和use_self_loops_only外），返回True，否则返回False
+        """
+        # 检查两个模型ID是否都存在
+        if model_id1 not in self.model_params or model_id2 not in self.model_params:
+            return False
+
+        # 获取两个模型的参数
+        params1 = self.model_params[model_id1]
+        params2 = self.model_params[model_id2]
+
+        # 确保两个模型都是GAT类型
+        if params1.get("model_type") != "GAT" or params2.get("model_type") != "GAT":
+            return False
+
+        # 检查use_self_loops_only参数 - 一个必须是True，一个必须是False
+        if not (
+            (
+                params1.get("use_self_loops_only") is True
+                and params2.get("use_self_loops_only") is False
+            )
+            or (
+                params1.get("use_self_loops_only") is False
+                and params2.get("use_self_loops_only") is True
+            )
+        ):
+            return False
+
+        # 检查其他所有参数是否相同
+        for param_name in set(params1.keys()).union(set(params2.keys())):
+            # 跳过model_id和use_self_loops_only参数
+            if param_name in ["model_id", "use_self_loops_only"]:
+                continue
+
+            # 如果任何参数不相同，返回False
+            if param_name not in params1 or param_name not in params2:
+                return False
+
+            if params1[param_name] != params2[param_name]:
+                return False
+
+        # 所有参数匹配
+        return True
+
     def get_training_time_stats(self):
         """获取训练时间统计"""
         return self.training_time_stats
@@ -164,47 +216,6 @@ class ExperimentTracker:
     def get_results(self, model_id):
         """获取模型结果"""
         return self.model_results.get(model_id)
-
-    def get_best_model(self, metric="train_map_score", fold_num=None, model_type=None):
-        """
-        获取基于指定指标的最佳模型
-
-        参数:
-            metric: 评估指标名称
-            fold_num: 如果提供，则仅在特定折中查找
-            model_type: 如果提供，则仅查找特定类型的模型（'MLP'或'GAT'）
-
-        返回:
-            (model_id, model): 最佳模型的ID和模型实例
-        """
-        best_score = -float("inf")
-        best_model_id = None
-
-        for model_id in self.model_results:
-            # 如果指定了fold_num，检查是否匹配
-            if (
-                fold_num is not None
-                and self.model_params[model_id].get("fold_num") != fold_num
-            ):
-                continue
-
-            # 如果指定了model_type，检查是否匹配
-            if (
-                model_type is not None
-                and self.model_params[model_id].get("model_type") != model_type
-            ):
-                continue
-
-            # 检查是否有指定的评估指标
-            if metric in self.model_results[model_id]:
-                score = self.model_results[model_id][metric]
-                if score > best_score:
-                    best_score = score
-                    best_model_id = model_id
-
-        if best_model_id:
-            return best_model_id, self.models[best_model_id]
-        return None, None
 
     def to_dataframe(self):
         """
@@ -229,27 +240,6 @@ class ExperimentTracker:
             return pd.DataFrame(all_data)
         else:
             return pd.DataFrame()
-
-    def filter_models(self, **kwargs):
-        """
-        根据参数筛选模型并返回DataFrame
-
-        参数:
-            **kwargs: 键值对形式的筛选条件
-
-        返回:
-            pd.DataFrame: 筛选后的模型DataFrame
-        """
-        df = self.to_dataframe()
-        if df.empty:
-            return df
-
-        # 应用每个筛选条件
-        for key, value in kwargs.items():
-            if key in df.columns:
-                df = df[df[key] == value]
-
-        return df
 
     def to_json(self, file_path):
         """

@@ -500,21 +500,21 @@ def get_skmodels(metric_type="MRR"):
     # 数据集大小不同，最优的超参数可能不同
     alpha_values = [1e-3]
     loss = ["WeightedMSE"]
-    lr_list = [1e-3, 5e-4]
+    lr_list = [1e-3, 8e-4]
     penalty = ["l2"]
-    dropout_rates = [0.2, 0.3]
+    dropout_rates = [0.15, 0.2]
     use_self_loops_modes = [False, True]
 
     early_stop_configs = [
-        (True, 3),
         (False, 5),
+        (False, 7),
     ]
 
     head_dim_configs = [
         (None, 64),  # MLP模式 - 大维度
         (1, 64),  # GAT单头 - 大维度
         (4, 64),  # GAT四头 - 大维度
-        (4, 32),  # GAT四头 - 中等维度
+        (2, 64),  # 尝试中间头数+大维度
     ]
 
     models = [
