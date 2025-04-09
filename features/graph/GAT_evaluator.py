@@ -566,13 +566,41 @@ class AdaptiveGATEvaluator:
         # 准备数据
         all_models = self.model_performance_df.copy()
 
-        # 检查评分列是否存在
-        if (
-            train_score_col not in all_models.columns
-            or test_score_col not in all_models.columns
-        ):
-            print(f"⚠ 警告: {score_type}分数列不存在，跳过模型类别比较图")
-            return
+        # 获取权重方法分数，用于判断模型的拟合状态
+        weights_scores = {}
+        for fold in all_models["fold_num"].unique():
+            fold_weights = all_models[
+                (all_models["fold_num"] == fold)
+                & (all_models["model_category"] == "baseline_weights")
+            ]
+            if not fold_weights.empty and train_score_col in fold_weights.columns:
+                weights_scores[fold] = {
+                    "train": fold_weights[train_score_col].iloc[0],
+                    "test": fold_weights[test_score_col].iloc[0],
+                }
+
+        # 判断每个模型的拟合状态
+        def determine_fitting_status(row):
+            fold = row["fold_num"]
+            if fold not in weights_scores:
+                return "未知"
+
+            train_diff = row[train_score_col] - weights_scores[fold]["train"]
+            test_diff = row[test_score_col] - weights_scores[fold]["test"]
+
+            if train_diff < -0.01:  # 回归分数比权重法低1%以上
+                return "欠拟合"
+            elif (
+                train_diff > 0.01 and test_diff < -0.02
+            ):  # 回归分数高但测试分数低2%以上
+                return "过拟合"
+            return "正常拟合"
+
+        # 为非权重模型添加拟合状态
+        nn_models = all_models["model_category"] != "baseline_weights"
+        all_models.loc[nn_models, "fitting_status"] = all_models[nn_models].apply(
+            determine_fitting_status, axis=1
+        )
 
         # 创建散点图
         plt.figure(figsize=(12, 10))
@@ -581,8 +609,6 @@ class AdaptiveGATEvaluator:
         folds = all_models["fold_num"].unique()
         colors = plt.cm.tab10(np.linspace(0, 1, len(folds)))
         fold_color_map = {fold: colors[i] for i, fold in enumerate(folds)}
-
-        legend_elements = []
 
         # 为每种模型类别定义标记
         markers = {
@@ -598,6 +624,16 @@ class AdaptiveGATEvaluator:
             "gat_realedge": "GAT真实边模型",
         }
 
+        # 拟合状态的边框颜色
+        fitting_edge_colors = {
+            "过拟合": "red",
+            "欠拟合": "blue",
+            "正常拟合": None,  # 正常拟合不添加边框
+            "未知": None,
+        }
+
+        legend_elements = []
+
         # 绘制所有模型点
         for fold in folds:
             fold_models = all_models[all_models["fold_num"] == fold]
@@ -607,35 +643,50 @@ class AdaptiveGATEvaluator:
                 category_models = fold_models[fold_models["model_category"] == category]
 
                 if not category_models.empty:
-                    if (
-                        train_score_col in category_models.columns
-                        and test_score_col in category_models.columns
-                    ):
-                        plt.scatter(
-                            category_models[train_score_col],
-                            category_models[test_score_col],
-                            marker=marker,
-                            s=80,
-                            color=fold_color_map[fold],
-                            alpha=0.7,
-                            label="_nolegend_",
-                        )
+                    plt.scatter(
+                        category_models[train_score_col],
+                        category_models[test_score_col],
+                        marker=marker,
+                        s=80,
+                        color=fold_color_map[fold],
+                        alpha=0.7,
+                        label="_nolegend_",
+                    )
 
-                        # 只为每个类别的第一个fold添加图例
-                        if fold == folds[0]:
-                            legend_elements.append(
-                                Line2D(
-                                    [0],
-                                    [0],
+                    # 根据拟合状态添加边框
+                    for _, model in category_models.iterrows():
+                        if (
+                            "fitting_status" in model
+                            and model["fitting_status"] in fitting_edge_colors
+                        ):
+                            edge_color = fitting_edge_colors[model["fitting_status"]]
+                            if edge_color:  # 只为过拟合和欠拟合添加边框
+                                plt.scatter(
+                                    model[train_score_col],
+                                    model[test_score_col],
                                     marker=marker,
-                                    color="k",
-                                    linestyle="none",
-                                    markerfacecolor="none",
-                                    markeredgewidth=1.5,
-                                    label=f"{category_names[category]}",
-                                    markersize=10,
+                                    s=100,  # 稍大一点以便边框可见
+                                    facecolors="none",
+                                    edgecolors=edge_color,
+                                    linewidths=1.5,
+                                    label="_nolegend_",
                                 )
+
+                    # 只为每个类别的第一个fold添加图例
+                    if fold == folds[0]:
+                        legend_elements.append(
+                            Line2D(
+                                [0],
+                                [0],
+                                marker=marker,
+                                color="k",
+                                linestyle="none",
+                                markerfacecolor="none",
+                                markeredgewidth=1.5,
+                                label=f"{category_names[category]}",
+                                markersize=10,
                             )
+                        )
 
             legend_elements.append(
                 Line2D(
@@ -695,18 +746,46 @@ class AdaptiveGATEvaluator:
                 best_idx = fold_models[train_score_col].idxmax()
                 best_models.append(all_models.loc[best_idx])
 
+        # 添加拟合状态到图例
+        legend_elements.extend(
+            [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="s",
+                    color="w",
+                    markeredgecolor="red",
+                    markerfacecolor="none",
+                    markersize=10,
+                    label="过拟合",
+                    markeredgewidth=1.5,
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="s",
+                    color="w",
+                    markeredgecolor="blue",
+                    markerfacecolor="none",
+                    markersize=10,
+                    label="欠拟合",
+                    markeredgewidth=1.5,
+                ),
+            ]
+        )
+
         # 添加最佳模型到图例
         legend_elements.append(
             Line2D(
                 [0],
                 [0],
-                marker="o",
+                marker="s",
                 color="w",
-                markeredgecolor="red",
+                markeredgecolor="gold",
                 markerfacecolor="none",
-                markersize=12,
+                markersize=10,
                 label="最佳模型",
-                markeredgewidth=2,
+                markeredgewidth=1.5,
             )
         )
 
@@ -718,9 +797,9 @@ class AdaptiveGATEvaluator:
                 model[train_score_col],
                 model[test_score_col],
                 marker=marker,
-                s=120,
+                s=100,
                 facecolors="none",
-                edgecolors="red",
+                edgecolors="gold",
                 linewidths=2,
                 label="_nolegend_",
             )
@@ -741,6 +820,287 @@ class AdaptiveGATEvaluator:
             )
         )
         plt.close()
+
+    def analyze_training_time(self):
+        """分析训练时间"""
+
+        # 计算平均每bug和每文件的训练时间
+        training_time = self.experiment_tracker.training_time_stats
+        time_stats = {}
+
+        for fold, data in training_time.items():
+            time_stats[fold] = {
+                "total_time_seconds": data["time"],
+                "total_time_minutes": data["time"] / 60,
+                "total_time_hours": data["time"] / 3600,
+                "bugs_count": data["bugs"],
+                "files_count": data["files"],
+                "seconds_per_bug": data["seconds_per_bug"],
+                "seconds_per_file": data["seconds_per_file"],
+            }
+
+        # 保存结果
+        json_path = os.path.join(self.output_dir, "training_time_analysis.json")
+        pd.Series(time_stats).to_json(
+            json_path, indent=4, orient="index", force_ascii=False
+        )
+
+        # 打印时间统计
+        print("\n===== 训练时间分析 =====")
+        for fold, stats in time_stats.items():
+            print(f"折 {fold}:")
+            print(
+                f"  总训练时间: {stats['total_time_hours']:.2f}小时 ({stats['total_time_minutes']:.2f}分钟)"
+            )
+            print(f"  Bug数量: {stats['bugs_count']}")
+            print(f"  文件数量: {stats['files_count']}")
+            print(f"  平均每bug训练时间: {stats['seconds_per_bug']:.2f}秒")
+            print(f"  平均每文件训练时间: {stats['seconds_per_file']:.2f}秒")
+
+        return time_stats
+
+    def analyze_epoch_impact(self):
+        """分析不同参数对训练轮次(epoch)的影响"""
+
+        # 创建epoch分析目录
+        epoch_dir = os.path.join(self.output_dir, "epoch_analysis")
+        os.makedirs(epoch_dir, exist_ok=True)
+
+        # 筛选有epoch信息的神经网络模型
+        nn_models_df = self.model_performance_df[
+            (self.model_performance_df["model_category"] != "baseline_weights")
+            & (self.model_performance_df["best_epoch"].notna())
+        ]
+
+        if nn_models_df.empty:
+            print("⚠ 警告: 未找到包含训练轮次信息的模型")
+            return {}
+
+        # 要分析的参数列表
+        params_to_analyze = [
+            "heads",
+            "loss",
+            "hidden_dim",
+            "penalty",
+            "lr",
+            "alpha",
+            "dropout",
+            "early_stop",
+            "n_iter_no_change",
+        ]
+
+        epoch_results = {"parameter_impact": {}, "epoch_distribution": {}}
+
+        # 1. 分析每个参数对epoch数的影响
+        for param in params_to_analyze:
+            if param not in nn_models_df.columns:
+                continue
+
+            unique_values = nn_models_df[param].unique()
+            if len(unique_values) <= 1:
+                continue
+
+            # 分析参数值与epoch数的关系
+            impact_data = []
+            for value in unique_values:
+                if not pd.isna(value):
+                    subset = nn_models_df[nn_models_df[param] == value]
+                    if not subset.empty:
+                        impact_data.append(
+                            {
+                                "param_value": value,
+                                "count": len(subset),
+                                "mean_epoch": subset["best_epoch"].mean(),
+                                "median_epoch": subset["best_epoch"].median(),
+                                "min_epoch": subset["best_epoch"].min(),
+                                "max_epoch": subset["best_epoch"].max(),
+                            }
+                        )
+
+            if impact_data:
+                epoch_results["parameter_impact"][param] = impact_data
+                # 绘制参数对epoch影响的图表
+                self._plot_epoch_parameter_impact(param, impact_data, epoch_dir)
+
+        # 2. 分析epoch分布情况
+        epoch_counts = nn_models_df["best_epoch"].value_counts().sort_index()
+        epoch_results["epoch_distribution"] = epoch_counts.to_dict()
+
+        # 绘制epoch分布直方图
+        plt.figure(figsize=(10, 6))
+        plt.hist(nn_models_df["best_epoch"], bins=min(20, len(epoch_counts)), alpha=0.7)
+        plt.xlabel("训练轮次(Epoch)")
+        plt.ylabel("模型数量")
+        plt.title("模型最佳训练轮次分布")
+        plt.grid(axis="y", alpha=0.75)
+        plt.savefig(os.path.join(epoch_dir, "epoch_distribution.png"))
+        plt.close()
+
+        # 3. 按模型类别分析epoch
+        category_epochs = (
+            nn_models_df.groupby("model_category")["best_epoch"]
+            .agg(["mean", "median", "min", "max"])
+            .reset_index()
+        )
+        epoch_results["category_epochs"] = category_epochs.to_dict(orient="records")
+
+        # 保存分析结果
+        json_path = os.path.join(self.output_dir, "epoch_impact_analysis.json")
+        pd.Series(epoch_results).to_json(
+            json_path, indent=4, orient="index", force_ascii=False
+        )
+        return epoch_results
+
+    def _plot_epoch_parameter_impact(self, param, impact_data, output_dir):
+        """绘制参数对epoch的影响图"""
+        df = pd.DataFrame(impact_data)
+        df["param_label"] = df["param_value"].astype(str)
+        df = df.sort_values(by="param_value")
+
+        plt.figure(figsize=(12, 6))
+        plt.bar(df["param_label"], df["mean_epoch"], alpha=0.7)
+
+        # 添加误差线，显示最小和最大值
+        plt.errorbar(
+            df["param_label"],
+            df["mean_epoch"],
+            yerr=[
+                df["mean_epoch"] - df["min_epoch"],
+                df["max_epoch"] - df["mean_epoch"],
+            ],
+            fmt="o",
+            color="black",
+            ecolor="gray",
+            capsize=5,
+        )
+
+        plt.xlabel(param)
+        plt.ylabel("平均训练轮次")
+        plt.title(f"{param}参数对训练轮次的影响")
+        plt.xticks(rotation=45, ha="right")
+        plt.grid(axis="y", linestyle="--", alpha=0.7)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"{param}_epoch_impact.png"))
+        plt.close()
+
+    def analyze_model_fitting(self):
+        """分析模型的过拟合/欠拟合情况，以权重法为基准"""
+        # 创建拟合分析目录
+        fitting_dir = os.path.join(self.output_dir, "fitting_analysis")
+        os.makedirs(fitting_dir, exist_ok=True)
+
+        score_types = ["MAP", "MRR"]
+        all_results = {}
+
+        for score_type in score_types:
+            train_score_col = f"train_{score_type}_score"
+            test_score_col = f"predict_{score_type}_score"
+
+            # 检查评分列是否存在
+            if train_score_col not in self.model_performance_df.columns:
+                print(f"⚠ 警告: {train_score_col}列不存在，跳过{score_type}分析")
+                continue
+
+            # 获取每个fold中权重方法的分数
+            weights_scores = {}
+            for fold in self.model_performance_df["fold_num"].unique():
+                fold_weights = self.model_performance_df[
+                    (self.model_performance_df["fold_num"] == fold)
+                    & (
+                        self.model_performance_df["model_category"]
+                        == "baseline_weights"
+                    )
+                ]
+
+                if not fold_weights.empty and train_score_col in fold_weights.columns:
+                    train_score = fold_weights[train_score_col].iloc[0]
+                    test_score = fold_weights[test_score_col].iloc[0]
+                    weights_scores[fold] = {"train": train_score, "test": test_score}
+
+            # 筛选神经网络模型
+            nn_models_df = self.model_performance_df[
+                self.model_performance_df["model_category"] != "baseline_weights"
+            ]
+
+            # 计算每个模型相对于权重方法的拟合情况
+            fitting_data = []
+
+            for _, model in nn_models_df.iterrows():
+                fold = model["fold_num"]
+                if fold not in weights_scores:
+                    continue
+
+                if train_score_col not in model or test_score_col not in model:
+                    continue
+
+                # 计算与权重方法的差异
+                train_diff = model[train_score_col] - weights_scores[fold]["train"]
+                test_diff = model[test_score_col] - weights_scores[fold]["test"]
+
+                # 定义拟合状态
+                fitting_status = "正常拟合"  # 默认状态
+
+                if train_diff < -0.01:  # 回归分数比权重法低1%以上
+                    fitting_status = "欠拟合"
+                elif (
+                    train_diff > 0.01 and test_diff < -0.02
+                ):  # 回归分数高但测试分数比权重法低2%以上
+                    fitting_status = "过拟合"
+
+                # 收集数据
+                fitting_data.append(
+                    {
+                        "model_id": model["model_id"],
+                        "model_category": model["model_category"],
+                        "fold_num": fold,
+                        "train_score": model[train_score_col],
+                        "test_score": model[test_score_col],
+                        "weights_train": weights_scores[fold]["train"],
+                        "weights_test": weights_scores[fold]["test"],
+                        "train_diff": train_diff,
+                        "test_diff": test_diff,
+                        "best_epoch": model.get("best_epoch", np.nan),
+                        "fitting_status": fitting_status,
+                    }
+                )
+
+            # 转换为DataFrame
+            fitting_df = pd.DataFrame(fitting_data)
+
+            if fitting_df.empty:
+                print(f"⚠ 警告: 没有足够的数据进行{score_type}拟合分析")
+                continue
+
+            category_fitting = pd.crosstab(
+                fitting_df["model_category"], fitting_df["fitting_status"]
+            )
+
+            # 可视化模型类别与拟合状态的关系
+            plt.figure(figsize=(10, 6))
+            category_fitting.plot(kind="bar", stacked=True)
+            plt.xlabel("模型类别")
+            plt.ylabel("模型数量")
+            plt.title(f"不同模型类别的拟合状态分布 ({score_type})")
+            plt.legend(title="拟合状态")
+            plt.tight_layout()
+            plt.savefig(os.path.join(fitting_dir, f"category_fitting_{score_type}.png"))
+            plt.close()
+
+            # 保存该评分类型的分析结果
+            all_results[score_type] = {
+                "fitting_distribution": fitting_df["fitting_status"]
+                .value_counts()
+                .to_dict(),
+                "category_fitting": category_fitting.to_dict(),
+                "model_details": fitting_df.to_dict(orient="records"),
+            }
+
+        # 保存所有分析结果
+        json_path = os.path.join(self.output_dir, "fitting_analysis.json")
+        pd.Series(all_results).to_json(
+            json_path, indent=4, orient="index", force_ascii=False
+        )
+        return all_results
 
     def generate_final_report(self):
         """生成最终综合报告"""
@@ -867,44 +1227,6 @@ class AdaptiveGATEvaluator:
 
         return True
 
-    def analyze_training_time(self):
-        """分析训练时间"""
-
-        # 计算平均每bug和每文件的训练时间
-        training_time = self.experiment_tracker.training_time_stats
-        time_stats = {}
-
-        for fold, data in training_time.items():
-            time_stats[fold] = {
-                "total_time_seconds": data["time"],
-                "total_time_minutes": data["time"] / 60,
-                "total_time_hours": data["time"] / 3600,
-                "bugs_count": data["bugs"],
-                "files_count": data["files"],
-                "seconds_per_bug": data["seconds_per_bug"],
-                "seconds_per_file": data["seconds_per_file"],
-            }
-
-        # 保存结果
-        json_path = os.path.join(self.output_dir, "training_time_analysis.json")
-        pd.Series(time_stats).to_json(
-            json_path, indent=4, orient="index", force_ascii=False
-        )
-
-        # 打印时间统计
-        print("\n===== 训练时间分析 =====")
-        for fold, stats in time_stats.items():
-            print(f"折 {fold}:")
-            print(
-                f"  总训练时间: {stats['total_time_hours']:.2f}小时 ({stats['total_time_minutes']:.2f}分钟)"
-            )
-            print(f"  Bug数量: {stats['bugs_count']}")
-            print(f"  文件数量: {stats['files_count']}")
-            print(f"  平均每bug训练时间: {stats['seconds_per_bug']:.2f}秒")
-            print(f"  平均每文件训练时间: {stats['seconds_per_file']:.2f}秒")
-
-        return time_stats
-
     def run_all_analyses(self):
         """运行所有分析"""
         # 加载日志数据
@@ -918,6 +1240,8 @@ class AdaptiveGATEvaluator:
         self.analyze_parameter_impact()
         self.analyze_self_loops_effect()
         self.analyze_training_time()
+        self.analyze_epoch_impact()
+        self.analyze_model_fitting()
 
         # 生成最终报告
         self.generate_final_report()
