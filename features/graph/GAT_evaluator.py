@@ -196,14 +196,12 @@ class AdaptiveGATEvaluator:
             "lr",
             "alpha",
             "dropout",
-            "early_stop",
             "n_iter_no_change",
         ]
 
         # 要分析的参数组合列表
         param_combinations = [
             ("heads", "hidden_dim"),  # 注意力头数和隐藏层维度的组合
-            ("early_stop", "n_iter_no_change"),  # 早停策略和无改进轮数的组合
             ("penalty", "alpha"),  # 正则化方法和正则化强度的组合
         ]
 
@@ -861,11 +859,6 @@ class AdaptiveGATEvaluator:
 
     def analyze_epoch_impact(self):
         """分析不同参数对训练轮次(epoch)的影响"""
-
-        # 创建epoch分析目录
-        epoch_dir = os.path.join(self.output_dir, "epoch_analysis")
-        os.makedirs(epoch_dir, exist_ok=True)
-
         # 筛选有epoch信息的神经网络模型
         nn_models_df = self.model_performance_df[
             (self.model_performance_df["model_category"] != "baseline_weights")
@@ -876,80 +869,148 @@ class AdaptiveGATEvaluator:
             print("⚠ 警告: 未找到包含训练轮次信息的模型")
             return {}
 
-        # 要分析的参数列表
-        params_to_analyze = [
-            "heads",
-            "loss",
-            "hidden_dim",
-            "penalty",
-            "lr",
-            "alpha",
-            "dropout",
-            "early_stop",
-            "n_iter_no_change",
-        ]
+        score_types = ["MAP", "MRR"]
+        all_results = {}
 
-        epoch_results = {"parameter_impact": {}, "epoch_distribution": {}}
+        for score_type in score_types:
+            fitting_status_col = f"fitting_status_{score_type}"
 
-        # 1. 分析每个参数对epoch数的影响
-        for param in params_to_analyze:
-            if param not in nn_models_df.columns:
+            if fitting_status_col not in nn_models_df.columns:
+                print(
+                    f"⚠ 警告: 未找到{score_type}过拟合状态列({fitting_status_col})！请先确保已执行过'analyze_model_fitting'步骤。"
+                )
                 continue
 
-            unique_values = nn_models_df[param].unique()
-            if len(unique_values) <= 1:
-                continue
+            # 统计不同拟合状态下的epoch分布
+            epoch_results = (
+                nn_models_df.groupby(fitting_status_col)["best_epoch"]
+                .agg(["count", "mean", "median", "min", "max"])
+                .reset_index()
+            )
 
-            # 分析参数值与epoch数的关系
-            impact_data = []
-            for value in unique_values:
-                if not pd.isna(value):
-                    subset = nn_models_df[nn_models_df[param] == value]
-                    if not subset.empty:
-                        impact_data.append(
-                            {
-                                "param_value": value,
-                                "count": len(subset),
-                                "mean_epoch": subset["best_epoch"].mean(),
-                                "median_epoch": subset["best_epoch"].median(),
-                                "min_epoch": subset["best_epoch"].min(),
-                                "max_epoch": subset["best_epoch"].max(),
-                            }
+            # 绘制不同拟合状态对应的epoch分布（示例：箱线图）
+            plt.figure(figsize=(8, 6))
+
+            # 为每个fold分配不同颜色
+            folds = nn_models_df["fold_num"].unique()
+            colors = plt.cm.tab10(np.linspace(0, 1, len(folds)))
+            fold_color_map = {fold: colors[i] for i, fold in enumerate(folds)}
+
+            # 为每种模型类别定义标记
+            markers = {
+                "baseline_mlp": "^",  # 三角形
+                "gat_selfloop": "s",  # 方形
+                "gat_realedge": "o",  # 圆形
+            }
+
+            # 模型类别名称映射
+            category_names = {
+                "baseline_mlp": "MLP模型",
+                "gat_selfloop": "GAT自环模型",
+                "gat_realedge": "GAT真实边模型",
+            }
+
+            # 拟合状态映射到数值位置
+            status_mapping = {
+                "欠拟合": 0,
+                "正常拟合": 1,
+                "过拟合": 2,
+                "未知": 1.5,  # 如有未知状态
+            }
+
+            # 图例元素列表
+            legend_elements = []
+
+            # 按拟合状态分组绘制，但不使用sns.stripplot
+            for fold in folds:
+                fold_models = nn_models_df[nn_models_df["fold_num"] == fold]
+
+                # 按模型类别绘制
+                for category, marker in markers.items():
+                    category_models = fold_models[
+                        fold_models["model_category"] == category
+                    ]
+
+                    # 绘制每个拟合状态
+                    for status in category_models[fitting_status_col].unique():
+                        status_models = category_models[
+                            category_models[fitting_status_col] == status
+                        ]
+
+                        if not status_models.empty:
+                            # 为每个数据点增加小的随机偏移，模拟jitter效果
+                            jitter = np.random.uniform(-0.15, 0.15, len(status_models))
+                            status_positions = (
+                                np.zeros(len(status_models))
+                                + status_mapping[status]
+                                + jitter
+                            )
+
+                            plt.scatter(
+                                status_positions,
+                                status_models["best_epoch"],
+                                marker=marker,
+                                s=80,
+                                color=fold_color_map[fold],
+                                alpha=0.7,
+                                label="_nolegend_",
+                            )
+
+                # 为每个fold添加图例
+                if fold == folds[0]:  # 避免图例重复
+                    for category, marker in markers.items():
+                        legend_elements.append(
+                            Line2D(
+                                [0],
+                                [0],
+                                marker=marker,
+                                color="k",
+                                linestyle="none",
+                                markerfacecolor="none",
+                                markeredgewidth=1.5,
+                                label=f"{category_names.get(category, category)}",
+                                markersize=10,
+                            )
                         )
 
-            if impact_data:
-                epoch_results["parameter_impact"][param] = impact_data
-                # 绘制参数对epoch影响的图表
-                self._plot_epoch_parameter_impact(param, impact_data, epoch_dir)
+                # 为每个fold添加图例
+                legend_elements.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="w",
+                        label=f"折 {fold}",
+                        markerfacecolor=fold_color_map[fold],
+                        markersize=10,
+                    )
+                )
 
-        # 2. 分析epoch分布情况
-        epoch_counts = nn_models_df["best_epoch"].value_counts().sort_index()
-        epoch_results["epoch_distribution"] = epoch_counts.to_dict()
+            plt.xticks([0, 1, 2], ["欠拟合", "正常拟合", "过拟合"])
+            plt.xlabel("拟合状态", fontsize=12)
+            plt.ylabel("最佳训练轮次(best_epoch)", fontsize=12)
+            plt.title(f"{score_type}指标下不同拟合状态与训练轮次的关系", fontsize=14)
+            plt.grid(axis="y", linestyle="--", alpha=0.7)
 
-        # 绘制epoch分布直方图
-        plt.figure(figsize=(10, 6))
-        plt.hist(nn_models_df["best_epoch"], bins=min(20, len(epoch_counts)), alpha=0.7)
-        plt.xlabel("训练轮次(Epoch)")
-        plt.ylabel("模型数量")
-        plt.title("模型最佳训练轮次分布")
-        plt.grid(axis="y", alpha=0.75)
-        plt.savefig(os.path.join(epoch_dir, "epoch_distribution.png"))
-        plt.close()
+            # 添加图例
+            plt.legend(handles=legend_elements, loc="best")
+            plt.tight_layout()
 
-        # 3. 按模型类别分析epoch
-        category_epochs = (
-            nn_models_df.groupby("model_category")["best_epoch"]
-            .agg(["mean", "median", "min", "max"])
-            .reset_index()
-        )
-        epoch_results["category_epochs"] = category_epochs.to_dict(orient="records")
+            plt.savefig(
+                os.path.join(
+                    self.output_dir, f"epoch_overfitting_analysis_{score_type}.png"
+                )
+            )
+            plt.close()
+
+            all_results[score_type] = epoch_results.to_dict()
 
         # 保存分析结果
         json_path = os.path.join(self.output_dir, "epoch_impact_analysis.json")
-        pd.Series(epoch_results).to_json(
+        pd.Series(all_results).to_json(
             json_path, indent=4, orient="index", force_ascii=False
         )
-        return epoch_results
+        return all_results
 
     def _plot_epoch_parameter_impact(self, param, impact_data, output_dir):
         """绘制参数对epoch的影响图"""
@@ -995,6 +1056,7 @@ class AdaptiveGATEvaluator:
         for score_type in score_types:
             train_score_col = f"train_{score_type}_score"
             test_score_col = f"predict_{score_type}_score"
+            fitting_status_col = f"fitting_status_{score_type}"
 
             # 检查评分列是否存在
             if train_score_col not in self.model_performance_df.columns:
@@ -1024,6 +1086,7 @@ class AdaptiveGATEvaluator:
 
             # 计算每个模型相对于权重方法的拟合情况
             fitting_data = []
+            fitting_status_map = {}
 
             for _, model in nn_models_df.iterrows():
                 fold = model["fold_num"]
@@ -1047,6 +1110,9 @@ class AdaptiveGATEvaluator:
                 ):  # 回归分数高但测试分数比权重法低2%以上
                     fitting_status = "过拟合"
 
+                model_id = model["model_id"]
+                fitting_status_map[model_id] = fitting_status
+
                 # 收集数据
                 fitting_data.append(
                     {
@@ -1063,6 +1129,14 @@ class AdaptiveGATEvaluator:
                         "fitting_status": fitting_status,
                     }
                 )
+
+            # 将拟合状态信息更新到主DataFrame中
+            for model_id, status in fitting_status_map.items():
+                # 使用.loc确保正确更新DataFrame
+                self.model_performance_df.loc[
+                    self.model_performance_df["model_id"] == model_id,
+                    fitting_status_col,
+                ] = status
 
             # 转换为DataFrame
             fitting_df = pd.DataFrame(fitting_data)
@@ -1240,8 +1314,8 @@ class AdaptiveGATEvaluator:
         self.analyze_parameter_impact()
         self.analyze_self_loops_effect()
         self.analyze_training_time()
-        self.analyze_epoch_impact()
         self.analyze_model_fitting()
+        self.analyze_epoch_impact()
 
         # 生成最终报告
         self.generate_final_report()

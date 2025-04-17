@@ -694,7 +694,7 @@ def main():
     )
 
     results_timestamp = time.strftime("%Y%m%d%H%M%S")
-    result_dir = f"{file_prefix}_{results_timestamp}"
+    result_dir = f"{file_prefix}_GAT_{args.metric}_{results_timestamp}"
     os.makedirs(result_dir, exist_ok=True)
 
     # 保存模型注册表数据

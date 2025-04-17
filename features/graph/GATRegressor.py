@@ -10,7 +10,7 @@ from torch_geometric.data import Data
 
 from train_utils import eprint
 from ranking_losses import WeightedRankMSELoss
-from metrics import calculate_metric_results, evaluate_fold
+from metrics import evaluate_fold
 
 
 class GATModule(nn.Module):
