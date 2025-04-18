@@ -22,7 +22,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from GATRegressor import GATRegressor
+from GATRegressor import GATRegressor, ModelParameters
 
 
 class ExperimentTracker:
@@ -73,21 +73,14 @@ class ExperimentTracker:
         self.models[model_id] = model
 
         # 自动从模型实例提取参数
-        params = {
-            "hidden_dim": model.hidden_dim,
-            "heads": model.heads,
-            "dropout": model.dropout,
-            "alpha": model.alpha,
-            "loss": model.loss,
-            "penalty": model.penalty,
-            "lr": model.lr,
-            "use_self_loops_only": model.use_self_loops_only,
-            "max_iter": model.max_iter,
-            "n_iter_no_change": model.n_iter_no_change,
-            "shuffle": model.shuffle,
-            "model_type": "MLP" if model.heads is None else "GAT",
-            "fold_num": fold_num,
-        }
+        params = {}
+        for param_name in ModelParameters.get_all_params():
+            if hasattr(model, param_name):
+                params[param_name] = getattr(model, param_name)
+
+        # 添加特殊参数
+        params["model_type"] = "MLP" if model.heads is None else "GAT"
+        params["fold_num"] = fold_num
 
         # 将model_id添加到模型对象中，方便后续使用
         setattr(model, "model_id", model_id)

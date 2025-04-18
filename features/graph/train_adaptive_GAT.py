@@ -214,7 +214,7 @@ class Adaptive_Process(object):
         fold_reg_models = []
         for base_model in self.reg_models:
             # 克隆模型，以避免模型实例在多个折之间共享
-            fold_model = clone_regressor(base_model)
+            fold_model = base_model.clone()
             self.experiment_tracker.register_model(fold_model, fold_num)
             fold_reg_models.append(fold_model)
 
@@ -392,7 +392,7 @@ class Adaptive_Process(object):
                 train_score = score[train_mask]
 
                 # 训练模型
-                fold_model = clone_regressor(reg_model)
+                fold_model = reg_model.clone()
                 fold_model.fit(train_df, train_dep_df, train_score)
 
                 # 在验证集上评估
@@ -602,31 +602,6 @@ def _process(
     clf = ptemplate.train(fold_training, fold_dependency_training, fold_num)
     result = ptemplate.predict(clf, fold_testing, fold_dependency_testing, fold_num)
     return result
-
-
-# 辅助函数：克隆回归器
-def clone_regressor(reg_model):
-    """创建回归器的深拷贝，保留所有参数但重置状态"""
-    return GATRegressor(
-        node_feature_columns=reg_model.node_feature_columns,
-        dependency_feature_columns=reg_model.dependency_feature_columns,
-        hidden_dim=reg_model.hidden_dim,
-        heads=reg_model.heads,
-        dropout=reg_model.dropout,
-        alpha=reg_model.alpha,
-        loss=reg_model.loss,
-        penalty=reg_model.penalty,
-        max_iter=reg_model.max_iter,
-        tol=reg_model.tol,
-        shuffle=reg_model.shuffle,
-        epsilon=reg_model.epsilon,
-        random_state=reg_model.random_state,
-        lr=reg_model.lr,
-        warm_start=reg_model.warm_start,
-        n_iter_no_change=reg_model.n_iter_no_change,
-        use_self_loops_only=reg_model.use_self_loops_only,
-        metric_type=reg_model.metric_type,
-    )
 
 
 def normal_score(

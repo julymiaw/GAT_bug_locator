@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 from typing import List
 import torch
 import torch.nn as nn
@@ -11,6 +10,42 @@ from torch_geometric.data import Data
 from train_utils import eprint
 from ranking_losses import WeightedRankMSELoss
 from metrics import evaluate_fold
+
+
+class ModelParameters:
+    """GATRegressor 参数的中央定义类"""
+
+    # 默认参数值
+    DEFAULTS = {
+        # 模型结构参数
+        "node_feature_columns": None,  # 必须提供
+        "dependency_feature_columns": None,  # 必须提供
+        "hidden_dim": 16,
+        "heads": None,
+        "dropout": 0.3,
+        "use_self_loops_only": False,
+        # 优化器参数
+        "alpha": 0.0001,
+        "lr": 0.005,
+        "penalty": "l2",
+        # 损失函数参数
+        "loss": "MSE",
+        "epsilon": 0.1,
+        # 训练控制参数
+        "max_iter": 500,
+        "tol": 1e-4,
+        "n_iter_no_change": 5,
+        "shuffle": True,
+        "warm_start": False,
+        "random_state": 42,
+        # 评估参数
+        "metric_type": "MRR",
+    }
+
+    @classmethod
+    def get_all_params(cls):
+        """获取所有参数名称"""
+        return list(cls.DEFAULTS.keys())
 
 
 class GATModule(nn.Module):
@@ -460,3 +495,14 @@ class GATRegressor:
                 idx += len(pred)
 
         return predictions
+
+    def clone(self):
+        """创建当前回归器的深拷贝，保留所有参数但重置状态"""
+        # 提取当前实例的所有标准参数
+        params = {}
+        for param_name in ModelParameters.get_all_params():
+            if hasattr(self, param_name):
+                params[param_name] = getattr(self, param_name)
+
+        # 创建新实例
+        return GATRegressor(**params)
