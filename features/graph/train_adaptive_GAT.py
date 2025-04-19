@@ -98,7 +98,7 @@ class Adaptive_Process(object):
         self.use_prescoring_always = False  # 是否始终使用预评分权重
         self.use_reg_model_always = True  # 是否强制使用回归模型
         self.use_prescoring_cross_validation = True  # 权重计算阶段交叉验证开关
-        self.use_training_cross_validation = True
+        self.use_training_cross_validation = False
         self.cross_validation_fold_number = 5  # 交叉验证折数
         # endregion
 

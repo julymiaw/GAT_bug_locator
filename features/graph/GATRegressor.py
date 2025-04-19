@@ -277,7 +277,7 @@ class GATRegressor:
 
         weight_score = evaluate_fold(node_features, score, self.metric_type)
 
-        min_acceptable_score = weight_score * 0.99  # 允许1%的容差
+        min_acceptable_score = weight_score * 0.9
 
         # 添加修正后的分数用于训练
         fix_score = score + node_features["used_in_fix"] * np.max(score)
