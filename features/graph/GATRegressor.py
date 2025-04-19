@@ -32,7 +32,7 @@ class ModelParameters:
         "loss": "MSE",
         "epsilon": 0.1,
         # 训练控制参数
-        "max_iter": 500,
+        "max_iter": 1000,
         "tol": 1e-4,
         "n_iter_no_change": 5,
         "shuffle": True,
@@ -132,6 +132,16 @@ class GATModule(nn.Module):
             nn.Linear(hidden_dim // 2, 1),
         )
 
+        self.training_summary = {
+            "stop_reason": None,
+            "best_epoch": None,
+            "final_epoch": None,
+            "final_score": None,
+            "weight_score": None,
+            "performance_ratio": None,
+            "final_loss": None,
+        }
+
     def forward(self, x, edge_index, edge_attr):
         # 节点特征变换
         x = self.node_lin(x)
@@ -191,7 +201,7 @@ class GATRegressor:
         alpha=0.0001,
         loss="MSE",
         penalty="l2",
-        max_iter=500,
+        max_iter=1000,
         tol=1e-4,
         shuffle=True,
         epsilon=0.1,
@@ -252,8 +262,6 @@ class GATRegressor:
         self.optimizer = None
         self.criterion = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.best_epoch = 0
 
         # 设置随机种子
         if self.random_state is not None:
@@ -325,6 +333,7 @@ class GATRegressor:
         best_weights = None
         exceeded_weight_score = False
         current_score = 0.0
+        best_epoch = 0
 
         for epoch in range(self.max_iter):
             # 如果需要，打乱数据
@@ -351,30 +360,58 @@ class GATRegressor:
             self.optimizer.step()
             avg_train_loss = total_loss / len(train_data)
 
+            current_score = evaluate_fold(node_features, predictions, self.metric_type)
+            exceeded_weight_score = current_score >= min_acceptable_score
+
             # 检查损失是否有改进
             if epoch == 0 or best_train_loss - avg_train_loss > self.tol:
                 best_train_loss = avg_train_loss
                 no_improvement_count = 0
-                self.best_epoch = epoch
+                best_epoch = epoch
                 best_weights = {
                     name: param.clone().detach()
                     for name, param in self.model.state_dict().items()
                 }
-
-                current_score = evaluate_fold(
-                    node_features, predictions, self.metric_type
-                )
-                exceeded_weight_score = current_score >= min_acceptable_score
             else:
                 no_improvement_count += 1
 
+            final_metrics = {
+                "epoch": epoch + 1,
+                "train_loss": avg_train_loss,
+                "current_score": current_score,
+                "weight_score": weight_score,
+                "exceeded_weight_score": exceeded_weight_score,
+                "no_improvement_count": no_improvement_count,
+            }
+
             # 检查是否应该提前停止
             if no_improvement_count >= self.n_iter_no_change and exceeded_weight_score:
+                stop_reason = (
+                    f"早停：连续{no_improvement_count}轮无改进且达到权重法性能要求"
+                )
                 break
+
+        # 如果是因为达到最大迭代次数而停止
+        if epoch == self.max_iter - 1:
+            if exceeded_weight_score:
+                stop_reason = f"达到最大迭代次数({self.max_iter})，已达到权重法性能要求"
+            else:
+                stop_reason = f"达到最大迭代次数({self.max_iter})，未达到权重法性能要求"
 
         # 恢复最佳权重
         if best_weights is not None:
             self.model.load_state_dict(best_weights)
+
+        # 保存训练终止信息
+        self.training_summary = {
+            "stop_reason": stop_reason,
+            "best_epoch": best_epoch + 1,
+            "final_epoch": final_metrics["epoch"],
+            "final_score": final_metrics["current_score"],
+            "weight_score": weight_score,
+            "performance_ratio": final_metrics["current_score"] / weight_score,
+            "final_loss": final_metrics["train_loss"],
+        }
 
         return self
 

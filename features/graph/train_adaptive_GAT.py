@@ -234,8 +234,8 @@ class Adaptive_Process(object):
         for reg_model, val_scores in results:
             model_id = reg_model.model_id
 
-            self.experiment_tracker.update_training_info(
-                model_id, best_epoch=reg_model.best_epoch
+            self.experiment_tracker.update_training_summary(
+                model_id, reg_model.training_summary
             )
 
             # 从val_scores中提取MAP和MRR得分

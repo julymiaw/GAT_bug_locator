@@ -104,20 +104,20 @@ class ExperimentTracker:
 
         self.model_results[model_id][metric_name] = metric_value
 
-    def update_training_info(self, model_id, best_epoch=None):
+    def update_training_summary(self, model_id, training_summary):
         """
-        更新模型训练信息
+        更新模型的训练摘要信息
 
         参数:
             model_id: 模型唯一标识符
-            best_epoch: 最佳验证表现的轮次
-            best_val_score: 最佳验证分数
+            training_summary: 包含训练终止信息的字典
         """
         if model_id not in self.model_results:
             self.model_results[model_id] = {}
 
-        if best_epoch is not None:
-            self.model_results[model_id]["best_epoch"] = best_epoch
+        # 将训练总结信息添加到模型结果中
+        for key, value in training_summary.items():
+            self.model_results[model_id][f"training_{key}"] = value
 
     def record_training_time(self, fold_num, time_seconds, bugs_count, files_count):
         """
