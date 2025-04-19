@@ -258,7 +258,7 @@ class ExperimentTracker:
             }
 
         with open(file_path, "w") as f:
-            json.dump(data, f, indent=4)
+            json.dump(data, f, indent=4, ensure_ascii=False)
 
     def from_json(self, file_path):
         """

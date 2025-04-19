@@ -32,7 +32,7 @@ class ModelParameters:
         "loss": "MSE",
         "epsilon": 0.1,
         # 训练控制参数
-        "max_iter": 1000,
+        "max_iter": 500,
         "tol": 1e-4,
         "n_iter_no_change": 5,
         "shuffle": True,
@@ -201,7 +201,7 @@ class GATRegressor:
         alpha=0.0001,
         loss="MSE",
         penalty="l2",
-        max_iter=1000,
+        max_iter=500,
         tol=1e-4,
         shuffle=True,
         epsilon=0.1,
@@ -344,8 +344,7 @@ class GATRegressor:
             total_loss = 0
             self.optimizer.zero_grad()
 
-            predictions = np.zeros(len(score))
-            idx = 0
+            bug_predictions = {}
 
             for data in train_data:
                 out = self.model(data.x, data.edge_index, data.edge_attr)
@@ -354,11 +353,21 @@ class GATRegressor:
                 total_loss += loss.item()
 
                 pred = out.detach().cpu().numpy().flatten()
-                predictions[idx : idx + len(pred)] = pred
-                idx += len(pred)
+                bug_predictions[data.bug_id] = pred
 
             self.optimizer.step()
             avg_train_loss = total_loss / len(train_data)
+
+            predictions = np.zeros(len(score))
+            idx = 0
+
+            # 遍历node_features中的每个bug_id，保持原始顺序
+            for bug_id in node_features.index.get_level_values(0).unique():
+                if bug_id in bug_predictions:
+                    bug_files = node_features.loc[bug_id]
+                    pred_length = len(bug_files)
+                    predictions[idx : idx + pred_length] = bug_predictions[bug_id]
+                    idx += pred_length
 
             current_score = evaluate_fold(node_features, predictions, self.metric_type)
             exceeded_weight_score = current_score >= min_acceptable_score
