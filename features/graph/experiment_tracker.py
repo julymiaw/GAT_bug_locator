@@ -22,7 +22,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from GATRegressor import GATRegressor, ModelParameters
+from GATRegressor import ModelParameters
 
 
 class ExperimentTracker:
@@ -47,7 +47,7 @@ class ExperimentTracker:
             "experiment_name": "adaptive_gat_experiment",
         }
 
-    def register_model(self, model: GATRegressor, fold_num):
+    def register_model(self, model, fold_num):
         """
         注册模型及其参数
 

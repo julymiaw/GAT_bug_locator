@@ -98,7 +98,7 @@ class Adaptive_Process(object):
         self.use_prescoring_always = False  # 是否始终使用预评分权重
         self.use_reg_model_always = True  # 是否强制使用回归模型
         self.use_prescoring_cross_validation = True  # 权重计算阶段交叉验证开关
-        self.use_training_cross_validation = False
+        self.use_training_cross_validation = True
         self.cross_validation_fold_number = 5  # 交叉验证折数
         # endregion
 
@@ -495,13 +495,10 @@ def get_skmodels(metric_type="MRR"):
         GATRegressor模型列表
     """
     # 数据集大小不同，最优的超参数可能不同
-    alpha_values = [1e-3]
-    loss = ["WeightedMSE"]
-    lr_list = [1e-3, 8e-4]
     penalty = ["l2"]
-    dropout_rates = [0.15, 0.2]
+    dropout_rates = [0.2]  # 小型数据集 0.1-0.3，大型数据集 0.3-0.5
     use_self_loops_modes = [False, True]
-    n_iter_no_change_list = [5, 7]
+    n_iter_no_change_list = [1, 3, 5]  # 值越大，过拟合越严重
 
     head_dim_configs = [
         (None, 64),  # MLP模式 - 大维度
@@ -517,26 +514,20 @@ def get_skmodels(metric_type="MRR"):
             hidden_dim=hd,
             heads=h,
             use_self_loops_only=loop,
-            loss=ls,
-            lr=lr,
             penalty=p,
             dropout=dr,
-            alpha=a,
             n_iter_no_change=nic,
             metric_type=metric_type,
         )
-        for (h, hd), ls, lr, p, dr, a, loop, nic in product(
+        for (h, hd), p, dr, loop, nic in product(
             head_dim_configs,
-            loss,
-            lr_list,
             penalty,
             dropout_rates,
-            alpha_values,
             use_self_loops_modes,
             n_iter_no_change_list,
         )
         if not (h is None and loop is True)  # MLP模式下不使用自环
-        and not (p is None and a != alpha_values[0])  # 无正则化时仅使用一个alpha值
+        # and not (p is None and a != alpha_values[0])  # 无正则化时仅使用一个alpha值
     ]
 
     # 输出模型数量信息

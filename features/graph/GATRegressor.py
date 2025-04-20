@@ -198,15 +198,15 @@ class GATRegressor:
         hidden_dim=16,
         heads=None,
         dropout=0.3,
-        alpha=0.0001,
-        loss="MSE",
+        alpha=1e-4,
+        loss="WeightedMSE",
         penalty="l2",
         max_iter=500,
         tol=1e-4,
         shuffle=True,
         epsilon=0.1,
         random_state=42,
-        lr=0.005,
+        lr=1e-3,
         warm_start=False,
         n_iter_no_change=5,
         use_self_loops_only=False,
@@ -285,7 +285,7 @@ class GATRegressor:
 
         weight_score = evaluate_fold(node_features, score, self.metric_type)
 
-        min_acceptable_score = weight_score * 0.9
+        min_acceptable_score = weight_score * 0.8
 
         # 添加修正后的分数用于训练
         fix_score = score + node_features["used_in_fix"] * np.max(score)
