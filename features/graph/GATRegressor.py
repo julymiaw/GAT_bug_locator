@@ -38,6 +38,7 @@ class ModelParameters:
         "shuffle": True,
         "warm_start": False,
         "random_state": 42,
+        "min_score_ratio": 0.8,
         # 评估参数
         "metric_type": "MRR",
     }
@@ -188,7 +189,7 @@ class GATModule(nn.Module):
 
 class GATRegressor:
     """
-    用于bug定位的GAT回归器，提供与scikit-learn兼容的接口
+    用于bug定位的GAT回归器
     """
 
     def __init__(
@@ -211,6 +212,7 @@ class GATRegressor:
         n_iter_no_change=5,
         use_self_loops_only=False,
         metric_type="MRR",
+        min_score_ratio=0.8,
     ):
         """
         初始化回归器
@@ -234,6 +236,7 @@ class GATRegressor:
             n_iter_no_change: 用于提前停止的无改进迭代次数
             use_self_loops_only: 是否仅使用自环边
             metric_type: 评估指标类型，可选值为"MAP"或"MRR"
+            min_score_ratio: 训练时的最小分数比例
         """
         self.node_feature_columns = node_feature_columns
         self.dependency_feature_columns = dependency_feature_columns

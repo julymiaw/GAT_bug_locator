@@ -142,25 +142,25 @@ python evaluator.py {log_dir}
 
     | 属性        | 分数   |     | 属性        | 分数   |
     | ----------- | ------ | --- | ----------- | ------ |
-    | Accuracy@1  | 0.3158 |     | Accuracy@11 | 0.4868 |
-    | Accuracy@2  | 0.3553 |     | Accuracy@12 | 0.4868 |
-    | Accuracy@3  | 0.3947 |     | Accuracy@13 | 0.4868 |
-    | Accuracy@4  | 0.3947 |     | Accuracy@14 | 0.5000 |
-    | Accuracy@5  | 0.4342 |     | Accuracy@15 | 0.5132 |
-    | Accuracy@6  | 0.4474 |     | Accuracy@16 | 0.5263 |
-    | Accuracy@7  | 0.4474 |     | Accuracy@17 | 0.5263 |
-    | Accuracy@8  | 0.4474 |     | Accuracy@18 | 0.5263 |
-    | Accuracy@9  | 0.4605 |     | Accuracy@19 | 0.5395 |
-    | Accuracy@10 | 0.4737 |     | Accuracy@20 | 0.5526 |
-    | MAP         | 0.3089 |     | MRR         | 0.3761 |
+    | Accuracy@1  | 0.2500 |     | Accuracy@11 | 0.6184 |
+    | Accuracy@2  | 0.3421 |     | Accuracy@12 | 0.6316 |
+    | Accuracy@3  | 0.3684 |     | Accuracy@13 | 0.6447 |
+    | Accuracy@4  | 0.4211 |     | Accuracy@14 | 0.6579 |
+    | Accuracy@5  | 0.4737 |     | Accuracy@15 | 0.6711 |
+    | Accuracy@6  | 0.4868 |     | Accuracy@16 | 0.6842 |
+    | Accuracy@7  | 0.5263 |     | Accuracy@17 | 0.6974 |
+    | Accuracy@8  | 0.5395 |     | Accuracy@18 | 0.6974 |
+    | Accuracy@9  | 0.5526 |     | Accuracy@19 | 0.6974 |
+    | Accuracy@10 | 0.6053 |     | Accuracy@20 | 0.7105 |
+    | MAP         | 0.3129 |     | MRR         | 0.3593 |
 
 3. 模型性能对比分析
 
     | 模型         | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
     | :----------- | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
     | SGDRegressor | 0.2665 | 0.3175 | 0.1842     | 0.4605     | 0.6447      | 0.7105      |
-    | GAT模型      | 0.3089 | 0.3761 | 0.3158     | 0.4342     | 0.4737      | 0.5526      |
-    | 提升百分比   | 15.9%  | 18.4%  | 71.4%      | -5.7%      | -26.5%      | -22.2%      |
+    | GAT模型      | 0.3129 | 0.3593 | 0.2500     | 0.4737     | 0.6053      | 0.7105      |
+    | 提升百分比   | 17.4%  | 13.2%  | 35.7%      | 2.9%       | -6.1%       | 0.0%        |
 
 ### Tomcat数据集
 
