@@ -14,6 +14,7 @@ import time
 import argparse
 import numpy as np
 import pandas as pd
+import networkx as nx
 import matplotlib.pyplot as plt
 from skopt import load
 from collections import defaultdict
@@ -50,113 +51,6 @@ def numpy_to_native(obj):
         return obj
 
 
-# 多进程辅助函数
-def _dfs_collect(node, adj_list, visited, component):
-    """DFS收集连通分量中的节点"""
-    visited.add(node)
-    component.append(node)
-    for neighbor in adj_list[node]:
-        if neighbor not in visited:
-            _dfs_collect(neighbor, adj_list, visited, component)
-
-
-def _bfs_shortest_path(adj_list, source, target):
-    """BFS计算两点间最短路径长度"""
-    if source == target:
-        return 0
-
-    visited = set([source])
-    queue = [(source, 0)]  # (节点, 路径长度)
-
-    while queue:
-        current, path_len = queue.pop(0)
-        for neighbor in adj_list[current]:
-            if neighbor not in visited:
-                if neighbor == target:
-                    return path_len + 1
-                visited.add(neighbor)
-                queue.append((neighbor, path_len + 1))
-
-    return -1  # 不可达
-
-
-def _identify_key_nodes(adj_list, nodes, top_k=5):
-    """识别关键节点(基于简单的度中心性)"""
-    # 计算每个节点的度
-    degree = {node: len(adj_list[node]) for node in nodes}
-    # 按度排序
-    key_nodes = sorted(degree.keys(), key=lambda x: degree[x], reverse=True)
-    return key_nodes[:top_k]
-
-
-def _calculate_message_efficiency(adj_list, nodes, sample_size=100):
-    """计算消息传递效率(近似)"""
-    if len(nodes) <= 1:
-        return 0, 0
-
-    # 随机抽样节点对
-    import random
-
-    sample_pairs = []
-    nodes_list = list(nodes)
-    if len(nodes) * (len(nodes) - 1) // 2 <= sample_size:
-        # 图较小，计算所有节点对
-        for i in range(len(nodes_list)):
-            for j in range(i + 1, len(nodes_list)):
-                sample_pairs.append((nodes_list[i], nodes_list[j]))
-    else:
-        # 随机抽样
-        while len(sample_pairs) < sample_size:
-            i, j = random.sample(range(len(nodes_list)), 2)
-            pair = (nodes_list[i], nodes_list[j])
-            if pair not in sample_pairs and (pair[1], pair[0]) not in sample_pairs:
-                sample_pairs.append(pair)
-
-    # 计算最短路径
-    path_lengths = []
-    for source, target in sample_pairs:
-        length = _bfs_shortest_path(adj_list, source, target)
-        if length > 0:  # 如果节点间有路径
-            path_lengths.append(length)
-
-    avg_path = np.mean(path_lengths) if path_lengths else float("inf")
-    # 消息传递效率 = 1 / 平均路径长度
-    msg_efficiency = 1 / avg_path if avg_path > 0 else 0
-
-    return avg_path, msg_efficiency
-
-
-def _calculate_hops_to_fix(adj_list, all_nodes, fix_nodes):
-    """计算每个节点到最近修复节点的跳数"""
-    hops_distribution = defaultdict(int)
-
-    for node in all_nodes:
-        if node in fix_nodes:
-            hops_distribution[0] += 1
-            continue
-
-        # BFS找最短路径
-        visited = set([node])
-        queue = [(node, 0)]  # (节点, 跳数)
-        found = False
-
-        while queue and not found:
-            current, hops = queue.pop(0)
-            for neighbor in adj_list[current]:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    if neighbor in fix_nodes:
-                        hops_distribution[hops + 1] += 1
-                        found = True
-                        break
-                    queue.append((neighbor, hops + 1))
-
-        if not found:
-            hops_distribution[-1] += 1  # 无法到达任何修复节点
-
-    return dict(hops_distribution)
-
-
 def process_bug_structure(bug_id, node_features, edge_features):
     """处理单个bug的图结构分析（用于多进程）"""
     try:
@@ -165,54 +59,56 @@ def process_bug_structure(bug_id, node_features, edge_features):
         bug_edges = edge_features.loc[bug_id]
 
         # 获取修复文件
-        fix_files = [
-            file_id
-            for file_id in file_ids
-            if bug_nodes.loc[file_id, "used_in_fix"] == 1
-        ]
+        fix_files = bug_nodes[bug_nodes["used_in_fix"] == 1].index.tolist()
 
         if not fix_files:  # 跳过没有修复文件的bug
             return None
 
-        # 构建邻接表
-        adj_list = defaultdict(list)
-        for _, edge in bug_edges.iterrows():
-            source = edge["source"]
-            target = edge["target"]
-            if source in file_ids and target in file_ids:
-                adj_list[source].append(target)
-                adj_list[target].append(source)  # 假设是无向图
+        # 构建NetworkX图
+        G = nx.Graph()
+        G.add_nodes_from(file_ids)
 
-        # 图密度 = 实际边数 / 可能的最大边数
-        node_count = len(file_ids)
-        max_edges = node_count * (node_count - 1) / 2  # 无向图完全连接的边数
         edge_count = len(bug_edges)
+        edge_list = list(zip(bug_edges["source"], bug_edges["target"]))
+        G.add_edges_from(edge_list)
+
+        # 计算图密度
+        n = len(file_ids)
+        max_edges = n * (n - 1) / 2
         density = edge_count / max_edges if max_edges > 0 else 0
 
-        # 计算连通分量
-        components = []
-        visited = set()
-        for file_id in file_ids:
-            if file_id not in visited:
-                component = []
-                _dfs_collect(file_id, adj_list, visited, component)
-                components.append(component)
+        # 获取连通分量 - 使用高效的NetworkX API
+        components = list(nx.connected_components(G))
 
-        # 分析修复文件在连通分量中的分布
-        fix_components = set()  # 包含修复文件的连通分量索引
-        for fix_file in fix_files:
-            for i, component in enumerate(components):
-                if fix_file in component:
-                    fix_components.add(i)
-                    break
-
-        # 计算平均路径长度和消息传递效率
-        avg_path_length, msg_efficiency = _calculate_message_efficiency(
-            adj_list, file_ids
+        # 使用集合推导式来高效计算包含修复文件的连通分量
+        fix_component_count = len(
+            {frozenset(nx.node_connected_component(G, f)) for f in fix_files}
         )
 
-        # 计算关键节点指标(介数中心性近似)
-        key_nodes = _identify_key_nodes(adj_list, file_ids)
+        try:
+            avg_path_length = nx.average_shortest_path_length(G)
+            msg_efficiency = 1 / avg_path_length if avg_path_length > 0 else 0
+        except nx.NetworkXError:  # 处理非连通图
+            # 对每个连通分量计算，然后加权平均
+            avg_path_length = 0
+            total_pairs = 0
+            for comp in components:
+                if len(comp) > 1:
+                    subg = G.subgraph(comp)
+                    comp_path_length = nx.average_shortest_path_length(subg)
+                    pairs = len(comp) * (len(comp) - 1) / 2
+                    avg_path_length += comp_path_length * pairs
+                    total_pairs += pairs
+            avg_path_length = (
+                avg_path_length / total_pairs if total_pairs > 0 else float("inf")
+            )
+            msg_efficiency = 1 / avg_path_length if avg_path_length > 0 else 0
+
+        # 使用NetworkX的中心性度量代替自定义方法
+        degree_centrality = nx.degree_centrality(G)
+        key_nodes = sorted(degree_centrality, key=degree_centrality.get, reverse=True)[
+            :5
+        ]
 
         # 保存该bug的统计信息
         bug_stat = {
@@ -222,7 +118,7 @@ def process_bug_structure(bug_id, node_features, edge_features):
             "density": density,
             "fix_files": len(fix_files),
             "components": len(components),
-            "fix_components": len(fix_components),
+            "fix_components": fix_component_count,
             "largest_component": max(len(c) for c in components),
             "avg_path_length": avg_path_length,
             "message_efficiency": msg_efficiency,
@@ -247,40 +143,53 @@ def process_bug_message_propagation(bug_stat, node_features, edge_features):
         bug_id = bug_stat["bug_id"]
         bug_nodes = node_features.loc[bug_id]
         file_ids = bug_nodes.index.tolist()
+        bug_edges = edge_features.loc[bug_id]
 
         # 获取修复文件
-        fix_files = [
-            file_id
-            for file_id in file_ids
-            if bug_nodes.loc[file_id, "used_in_fix"] == 1
-        ]
+        fix_files = bug_nodes[bug_nodes["used_in_fix"] == 1].index.tolist()
 
         if not fix_files:
             return None
 
-        # 构建邻接表
-        bug_edges = edge_features.loc[bug_id]
-        adj_list = defaultdict(list)
-        for _, edge in bug_edges.iterrows():
-            source = edge["source"]
-            target = edge["target"]
-            if source in file_ids and target in file_ids:
-                adj_list[source].append(target)
-                adj_list[target].append(source)
+        G = nx.Graph()
+        G.add_nodes_from(file_ids)
+        G.add_edges_from(list(zip(bug_edges["source"], bug_edges["target"])))
 
-        # 计算到修复文件的最短跳数分布
-        hops_distribution = _calculate_hops_to_fix(adj_list, file_ids, fix_files)
-
-        # 计算节点平均邻居数
         avg_neighbors = (
-            sum(len(neighbors) for neighbors in adj_list.values()) / len(adj_list)
-            if adj_list
-            else 0
+            np.mean([len(list(G.neighbors(n))) for n in G.nodes()]) if G.nodes() else 0
         )
+
+        hops_distribution = defaultdict(int)
+
+        for node in fix_files:
+            hops_distribution[0] += 1
+
+        # 对于每个非修复文件，找到到最近修复文件的距离
+        non_fix_nodes = set(file_ids) - set(fix_files)
+
+        fix_node_dists = {}
+        for fix_node in fix_files:
+            # 计算从修复节点到所有其他节点的最短路径
+            try:
+                dists = nx.single_source_shortest_path_length(G, fix_node)
+                for node, dist in dists.items():
+                    if node in non_fix_nodes:
+                        # 保存每个节点到当前修复节点的距离
+                        if node not in fix_node_dists or dist < fix_node_dists[node]:
+                            fix_node_dists[node] = dist
+            except nx.NetworkXError:
+                continue  # 跳过不可达的修复节点
+
+        # 统计跳数分布
+        for node in non_fix_nodes:
+            if node in fix_node_dists:
+                hops_distribution[fix_node_dists[node]] += 1
+            else:
+                hops_distribution[-1] += 1  # 不可达
 
         return {
             "bug_id": bug_id,
-            "distribution": hops_distribution,
+            "distribution": dict(hops_distribution),
             "unreachable": (
                 hops_distribution.get(-1, 0) / len(file_ids) if file_ids else 0
             ),
@@ -357,7 +266,6 @@ class DatasetEvaluator:
                 edge_features=self.edge_features,
             )
 
-            # 并行处理所有bug，带进度条
             results = list(pool.map(process_func, common_bugs))
 
         # 过滤有效结果
@@ -403,7 +311,6 @@ class DatasetEvaluator:
                 edge_features=self.edge_features,
             )
 
-            # 并行处理所有bug，带进度条
             results = list(pool.map(process_func, self.bug_stats))
 
         # 过滤有效结果
@@ -556,10 +463,10 @@ def main():
         sys.exit(1)
 
     # 拼接所有fold的数据
-    node_features = pd.concat(fold_testing, axis=0)
+    node_features = pd.concat(fold_testing, axis=0, copy=False)
     node_features.index = node_features.index.droplevel(0)
 
-    edge_features = pd.concat(fold_dependency_testing, axis=0)
+    edge_features = pd.concat(fold_dependency_testing, axis=0, copy=False)
     edge_features.index = edge_features.index.droplevel(0)
     print(f"数据加载完成，耗时: {time.time() - start_time:.2f}秒")
 
