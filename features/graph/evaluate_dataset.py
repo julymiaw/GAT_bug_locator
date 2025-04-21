@@ -21,9 +21,6 @@ from collections import defaultdict
 import multiprocessing as mp
 from functools import partial
 
-plt.rcParams["font.sans-serif"] = ["SimHei"]
-plt.rcParams["axes.unicode_minus"] = False
-
 # 导入共享常量
 node_feature_columns = ["f" + str(i) for i in range(1, 20)]
 edge_feature_columns = ["t" + str(i) for i in range(1, 13)]
@@ -364,12 +361,14 @@ class DatasetEvaluator:
             ],
             alpha=0.6,
         )
-        plt.xlabel("消息传播效率")
-        plt.ylabel("修复文件分散度(修复文件连通分量/总连通分量)")
-        plt.title("消息传播效率与修复文件分散度的关系")
+        plt.xlabel("Message Propagation Efficiency")
+        plt.ylabel("Fix Files Distribution Ratio (Fix Components/Total Components)")
+        plt.title("Relationship Between Message Efficiency and Fix Distribution")
         plt.grid(True, linestyle="--", alpha=0.7)
         plt.savefig(
-            os.path.join(self.output_dir, "message_efficiency_vs_fix_distribution.png")
+            os.path.join(self.output_dir, "message_efficiency_vs_fix_distribution.png"),
+            dpi=300,
+            bbox_inches="tight",
         )
         plt.close()
 
@@ -381,11 +380,15 @@ class DatasetEvaluator:
             [str(h) for h in hops] + ["不可达"],
             [hops_dist[h] for h in hops] + [hops_dist.get(-1, 0)],
         )
-        plt.xlabel("到最近修复文件的跳数")
-        plt.ylabel("节点占比")
-        plt.title("节点到修复文件的距离分布")
+        plt.xlabel("Hop Distance to Nearest Fix File")
+        plt.ylabel("Node Proportion")
+        plt.title("Distribution of Node Distances to Fix Files")
         plt.grid(True, axis="y", linestyle="--", alpha=0.7)
-        plt.savefig(os.path.join(self.output_dir, "hops_to_fix_distribution.png"))
+        plt.savefig(
+            os.path.join(self.output_dir, "hops_to_fix_distribution.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
         plt.close()
 
         # 3. 图密度与连通性的关系
@@ -395,9 +398,9 @@ class DatasetEvaluator:
             [s["components"] for s in self.bug_stats],
             alpha=0.6,
         )
-        plt.xlabel("图密度")
-        plt.ylabel("连通分量数量")
-        plt.title("图密度与连通分量数量的关系")
+        plt.xlabel("Graph Density")
+        plt.ylabel("Number of Connected Components")
+        plt.title("Relationship Between Graph Density and Connectivity")
         plt.grid(True, linestyle="--", alpha=0.7)
         plt.savefig(os.path.join(self.output_dir, "density_vs_connectivity.png"))
         plt.close()
@@ -407,9 +410,9 @@ class DatasetEvaluator:
         plt.hist(
             [s["key_nodes_are_fix"] for s in self.bug_stats], bins=10, range=(0, 1)
         )
-        plt.xlabel("关键节点是修复文件的比例")
-        plt.ylabel("Bug数量")
-        plt.title("关键节点包含修复文件的比例分布")
+        plt.xlabel("Proportion of Key Nodes that are Fix Files")
+        plt.ylabel("Number of Bugs")
+        plt.title("Distribution of Fix Files Among Key Nodes")
         plt.grid(True, linestyle="--", alpha=0.7)
         plt.savefig(os.path.join(self.output_dir, "key_nodes_fix_ratio.png"))
         plt.close()
