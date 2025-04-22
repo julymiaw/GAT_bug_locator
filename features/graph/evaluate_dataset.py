@@ -15,6 +15,8 @@ import argparse
 import numpy as np
 import pandas as pd
 import networkx as nx
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components, shortest_path
 import matplotlib.pyplot as plt
 from skopt import load
 from collections import defaultdict
@@ -50,81 +52,70 @@ def numpy_to_native(obj):
 
 def process_bug_structure(bug_id, node_features, edge_features):
     """处理单个bug的图结构分析（用于多进程）"""
+    # 为简化计算，视为无向图
     try:
         bug_nodes = node_features.loc[bug_id]
         file_ids = bug_nodes.index.tolist()
+        file_id_to_idx = {fid: idx for idx, fid in enumerate(file_ids)}
         bug_edges = edge_features.loc[bug_id]
-
-        # 获取修复文件
         fix_files = bug_nodes[bug_nodes["used_in_fix"] == 1].index.tolist()
 
         if not fix_files:  # 跳过没有修复文件的bug
             return None
 
-        # 构建NetworkX图
-        G = nx.Graph()
-        G.add_nodes_from(file_ids)
-
-        edge_count = len(bug_edges)
-        edge_list = list(zip(bug_edges["source"], bug_edges["target"]))
-        G.add_edges_from(edge_list)
-
-        # 计算图密度
+        # 构建稀疏邻接矩阵
+        src = bug_edges["source"].map(file_id_to_idx)
+        tgt = bug_edges["target"].map(file_id_to_idx)
         n = len(file_ids)
+        data = np.ones(len(src), dtype=np.int8)
+        adj = coo_matrix((data, (src, tgt)), shape=(n, n))
+        # 如果是无向图，补全对称
+        adj = adj + adj.T
+
+        edge_count = adj.nnz // 2  # 无向边
         max_edges = n * (n - 1) / 2
         density = edge_count / max_edges if max_edges > 0 else 0
 
-        # 获取连通分量 - 使用高效的NetworkX API
-        components = list(nx.connected_components(G))
+        # 连通分量
+        n_components, labels = connected_components(adj, directed=False)
+        # 统计fix文件分布在哪些分量
+        fix_idx = [file_id_to_idx[f] for f in fix_files]
+        fix_labels = set(labels[fix_idx])
+        fix_component_count = len(fix_labels)
 
-        # 使用集合推导式来高效计算包含修复文件的连通分量
-        fix_component_count = len(
-            {frozenset(nx.node_connected_component(G, f)) for f in fix_files}
-        )
-
-        try:
-            avg_path_length = nx.average_shortest_path_length(G)
+        # 平均最短路径长度（只算最大连通分量）
+        largest_label = np.bincount(labels).argmax()
+        largest_idx = np.where(labels == largest_label)[0]
+        if len(largest_idx) > 1:
+            sub_adj = adj.tocsr()[largest_idx, :][:, largest_idx]
+            dist = shortest_path(sub_adj, directed=False, unweighted=True)
+            avg_path_length = np.sum(dist) / (len(largest_idx) * (len(largest_idx) - 1))
             msg_efficiency = 1 / avg_path_length if avg_path_length > 0 else 0
-        except nx.NetworkXError:  # 处理非连通图
-            # 对每个连通分量计算，然后加权平均
-            avg_path_length = 0
-            total_pairs = 0
-            for comp in components:
-                if len(comp) > 1:
-                    subg = G.subgraph(comp)
-                    comp_path_length = nx.average_shortest_path_length(subg)
-                    pairs = len(comp) * (len(comp) - 1) / 2
-                    avg_path_length += comp_path_length * pairs
-                    total_pairs += pairs
-            avg_path_length = (
-                avg_path_length / total_pairs if total_pairs > 0 else float("inf")
-            )
-            msg_efficiency = 1 / avg_path_length if avg_path_length > 0 else 0
+        else:
+            avg_path_length = float("inf")
+            msg_efficiency = 0
 
-        # 使用NetworkX的中心性度量代替自定义方法
-        degree_centrality = nx.degree_centrality(G)
-        key_nodes = sorted(degree_centrality, key=degree_centrality.get, reverse=True)[
-            :5
-        ]
+        # 度中心性（只取前5高的节点）
+        degrees = np.array(adj.sum(axis=0)).flatten()
+        key_idx = degrees.argsort()[::-1][:5]
+        key_nodes = [file_ids[i] for i in key_idx]
+        key_nodes_are_fix = sum(
+            1 for node_id in key_nodes[:3] if node_id in fix_files
+        ) / min(3, len(key_nodes))
 
-        # 保存该bug的统计信息
         bug_stat = {
             "bug_id": bug_id,
-            "nodes": len(file_ids),
+            "nodes": n,
             "edges": edge_count,
             "density": density,
             "fix_files": len(fix_files),
-            "components": len(components),
+            "components": n_components,
             "fix_components": fix_component_count,
-            "largest_component": max(len(c) for c in components),
+            "largest_component": max(np.bincount(labels)),
             "avg_path_length": avg_path_length,
             "message_efficiency": msg_efficiency,
-            "key_nodes_are_fix": sum(
-                1 for node_id in key_nodes[:3] if node_id in fix_files
-            )
-            / min(3, len(key_nodes)),
+            "key_nodes_are_fix": key_nodes_are_fix,
         }
-
         return bug_stat
     except Exception as e:
         print(f"处理bug {bug_id}时出错: {str(e)}")
@@ -377,7 +368,7 @@ class DatasetEvaluator:
         hops = sorted([k for k in hops_dist.keys() if k >= 0])
         plt.figure(figsize=(10, 6))
         plt.bar(
-            [str(h) for h in hops] + ["不可达"],
+            [str(h) for h in hops] + ["Unreachable"],
             [hops_dist[h] for h in hops] + [hops_dist.get(-1, 0)],
         )
         plt.xlabel("Hop Distance to Nearest Fix File")
@@ -415,6 +406,44 @@ class DatasetEvaluator:
         plt.title("Distribution of Fix Files Among Key Nodes")
         plt.grid(True, linestyle="--", alpha=0.7)
         plt.savefig(os.path.join(self.output_dir, "key_nodes_fix_ratio.png"))
+        plt.close()
+
+        # 5. Additional: Graph size distribution
+        plt.figure(figsize=(10, 6))
+        plt.scatter(
+            [s["nodes"] for s in self.bug_stats],
+            [s["edges"] for s in self.bug_stats],
+            alpha=0.7,
+        )
+        plt.xlabel("Number of Files (Nodes)")
+        plt.ylabel("Number of Dependencies (Edges)")
+        plt.title("Graph Size Distribution")
+        plt.grid(True, linestyle="--", alpha=0.7)
+
+        # Add trend line
+        nodes = [s["nodes"] for s in self.bug_stats]
+        edges = [s["edges"] for s in self.bug_stats]
+        if nodes and edges:
+            z = np.polyfit(nodes, edges, 1)
+            p = np.poly1d(z)
+            x_range = np.linspace(min(nodes), max(nodes), 100)
+            plt.plot(x_range, p(x_range), "r--", alpha=0.8)
+
+            # Add equation
+            equation = f"y = {z[0]:.2f}x + {z[1]:.2f}"
+            plt.annotate(
+                equation,
+                xy=(0.05, 0.95),
+                xycoords="axes fraction",
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8),
+            )
+
+        plt.savefig(
+            os.path.join(self.output_dir, "graph_size_distribution.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
         plt.close()
 
         print(f"可视化完成，耗时: {time.time() - start_time:.2f}秒")
