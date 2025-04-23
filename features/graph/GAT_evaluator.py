@@ -578,22 +578,10 @@ class AdaptiveGATEvaluator:
 
     def analyze_model_fitting(self):
         """分析模型的过拟合/欠拟合情况，以权重法为基准"""
-        # 创建拟合分析目录
-        fitting_dir = os.path.join(self.output_dir, "fitting_analysis")
-        os.makedirs(fitting_dir, exist_ok=True)
-
-        score_types = ["MAP", "MRR"]
-        all_results = {}
-
-        for score_type in score_types:
+        for score_type in ["MAP", "MRR"]:
             train_score_col = f"train_{score_type}_score"
             test_score_col = f"predict_{score_type}_score"
             fitting_status_col = f"fitting_status_{score_type}"
-
-            # 检查评分列是否存在
-            if train_score_col not in self.model_performance_df.columns:
-                print(f"⚠ 警告: {train_score_col}列不存在，跳过{score_type}分析")
-                continue
 
             # 获取每个fold中权重方法的分数
             weights_scores = {}
@@ -606,10 +594,9 @@ class AdaptiveGATEvaluator:
                     )
                 ]
 
-                if not fold_weights.empty and train_score_col in fold_weights.columns:
-                    train_score = fold_weights[train_score_col].iloc[0]
-                    test_score = fold_weights[test_score_col].iloc[0]
-                    weights_scores[fold] = {"train": train_score, "test": test_score}
+                train_score = fold_weights[train_score_col].iloc[0]
+                test_score = fold_weights[test_score_col].iloc[0]
+                weights_scores[fold] = {"train": train_score, "test": test_score}
 
             # 筛选神经网络模型
             nn_models_df = self.model_performance_df[
@@ -617,16 +604,10 @@ class AdaptiveGATEvaluator:
             ]
 
             # 计算每个模型相对于权重方法的拟合情况
-            fitting_data = []
             fitting_status_map = {}
 
             for _, model in nn_models_df.iterrows():
                 fold = model["fold_num"]
-                if fold not in weights_scores:
-                    continue
-
-                if train_score_col not in model or test_score_col not in model:
-                    continue
 
                 # 计算与权重方法的差异
                 train_diff = model[train_score_col] - weights_scores[fold]["train"]
@@ -642,71 +623,14 @@ class AdaptiveGATEvaluator:
                 ):  # 回归分数高但测试分数比权重法低2%以上
                     fitting_status = "过拟合"
 
-                model_id = model["model_id"]
-                fitting_status_map[model_id] = fitting_status
-
-                # 收集数据
-                fitting_data.append(
-                    {
-                        "model_id": model["model_id"],
-                        "model_category": model["model_category"],
-                        "fold_num": fold,
-                        "train_score": model[train_score_col],
-                        "test_score": model[test_score_col],
-                        "weights_train": weights_scores[fold]["train"],
-                        "weights_test": weights_scores[fold]["test"],
-                        "train_diff": train_diff,
-                        "test_diff": test_diff,
-                        "training_best_epoch": model.get("training_best_epoch", np.nan),
-                        "fitting_status": fitting_status,
-                    }
-                )
+                fitting_status_map[model["model_id"]] = fitting_status
 
             # 将拟合状态信息更新到主DataFrame中
             for model_id, status in fitting_status_map.items():
-                # 使用.loc确保正确更新DataFrame
                 self.model_performance_df.loc[
                     self.model_performance_df["model_id"] == model_id,
                     fitting_status_col,
                 ] = status
-
-            # 转换为DataFrame
-            fitting_df = pd.DataFrame(fitting_data)
-
-            if fitting_df.empty:
-                print(f"⚠ 警告: 没有足够的数据进行{score_type}拟合分析")
-                continue
-
-            category_fitting = pd.crosstab(
-                fitting_df["model_category"], fitting_df["fitting_status"]
-            )
-
-            # 可视化模型类别与拟合状态的关系
-            plt.figure(figsize=(10, 6))
-            category_fitting.plot(kind="bar", stacked=True)
-            plt.xlabel("模型类别")
-            plt.ylabel("模型数量")
-            plt.title(f"不同模型类别的拟合状态分布 ({score_type})")
-            plt.legend(title="拟合状态")
-            plt.tight_layout()
-            plt.savefig(os.path.join(fitting_dir, f"category_fitting_{score_type}.png"))
-            plt.close()
-
-            # 保存该评分类型的分析结果
-            all_results[score_type] = {
-                "fitting_distribution": fitting_df["fitting_status"]
-                .value_counts()
-                .to_dict(),
-                "category_fitting": category_fitting.to_dict(),
-                "model_details": fitting_df.to_dict(orient="records"),
-            }
-
-        # 保存所有分析结果
-        json_path = os.path.join(self.output_dir, "fitting_analysis.json")
-        pd.Series(all_results).to_json(
-            json_path, indent=4, orient="index", force_ascii=False
-        )
-        return all_results
 
     def plot_model_categories_comparison(self, score_type="MAP"):
         """
@@ -717,46 +641,10 @@ class AdaptiveGATEvaluator:
         """
         train_score_col = f"train_{score_type}_score"
         test_score_col = f"predict_{score_type}_score"
+        fitting_status_col = f"fitting_status_{score_type}"
 
         # 准备数据
         all_models = self.model_performance_df.copy()
-
-        # 获取权重方法分数，用于判断模型的拟合状态
-        weights_scores = {}
-        for fold in all_models["fold_num"].unique():
-            fold_weights = all_models[
-                (all_models["fold_num"] == fold)
-                & (all_models["model_category"] == "baseline_weights")
-                & (all_models["model_category"].isin(["gat_selfloop", "gat_realedge"]))
-            ]
-            if not fold_weights.empty and train_score_col in fold_weights.columns:
-                weights_scores[fold] = {
-                    "train": fold_weights[train_score_col].iloc[0],
-                    "test": fold_weights[test_score_col].iloc[0],
-                }
-
-        # 判断每个模型的拟合状态
-        def determine_fitting_status(row):
-            fold = row["fold_num"]
-            if fold not in weights_scores:
-                return "未知"
-
-            train_diff = row[train_score_col] - weights_scores[fold]["train"]
-            test_diff = row[test_score_col] - weights_scores[fold]["test"]
-
-            if train_diff < -0.01:  # 回归分数比权重法低1%以上
-                return "欠拟合"
-            elif (
-                train_diff > 0.01 and test_diff < -0.02
-            ):  # 回归分数高但测试分数低2%以上
-                return "过拟合"
-            return "正常拟合"
-
-        # 为非权重模型添加拟合状态
-        nn_models = all_models["model_category"] != "baseline_weights"
-        all_models.loc[nn_models, "fitting_status"] = all_models[nn_models].apply(
-            determine_fitting_status, axis=1
-        )
 
         # 创建散点图
         plt.figure(figsize=(12, 10))
@@ -784,7 +672,7 @@ class AdaptiveGATEvaluator:
         fitting_edge_colors = {
             "过拟合": "red",
             "欠拟合": "blue",
-            "正常拟合": None,  # 正常拟合不添加边框
+            "正常拟合": "green",
             "未知": None,
         }
 
@@ -812,10 +700,11 @@ class AdaptiveGATEvaluator:
                     # 根据拟合状态添加边框
                     for _, model in category_models.iterrows():
                         if (
-                            "fitting_status" in model
-                            and model["fitting_status"] in fitting_edge_colors
+                            fitting_status_col in model.index
+                            and not pd.isna(model[fitting_status_col])
+                            and model[fitting_status_col] in fitting_edge_colors
                         ):
-                            edge_color = fitting_edge_colors[model["fitting_status"]]
+                            edge_color = fitting_edge_colors[model[fitting_status_col]]
                             if edge_color:  # 只为过拟合和欠拟合添加边框
                                 plt.scatter(
                                     model[train_score_col],
@@ -913,6 +802,17 @@ class AdaptiveGATEvaluator:
                     markerfacecolor="none",
                     markersize=10,
                     label="欠拟合",
+                    markeredgewidth=1.5,
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="s",
+                    color="w",
+                    markeredgecolor="green",
+                    markerfacecolor="none",
+                    markersize=10,
+                    label="正常拟合",
                     markeredgewidth=1.5,
                 ),
             ]
