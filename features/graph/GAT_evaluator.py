@@ -196,20 +196,17 @@ class AdaptiveGATEvaluator:
         """分析不同参数对模型性能的影响"""
         # 要分析的参数列表
         params_to_analyze = [
-            "heads",
-            "loss",
-            "hidden_dim",
             "penalty",
-            "lr",
-            "alpha",
             "dropout",
-            "n_iter_no_change",
+            "use_self_loops_only",
+            "alpha",
+            "lr",
         ]
 
-        # 要分析的参数组合列表
+        # 参数组合
         param_combinations = [
-            ("heads", "hidden_dim"),  # 注意力头数和隐藏层维度的组合
-            ("penalty", "alpha"),  # 正则化方法和正则化强度的组合
+            ("heads", "hidden_dim"),
+            ("min_score_ratio", "n_iter_no_change"),
         ]
 
         # 创建参数影响分析目录
@@ -306,7 +303,7 @@ class AdaptiveGATEvaluator:
                     v for v in nn_models_df[param2].unique() if not pd.isna(v)
                 ]
 
-                if len(unique_values1) <= 1 or len(unique_values2) <= 1:
+                if len(unique_values1) <= 1 and len(unique_values2) <= 1:
                     continue
 
                 # 为此组合创建数据
