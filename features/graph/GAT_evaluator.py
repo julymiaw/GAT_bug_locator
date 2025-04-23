@@ -138,14 +138,18 @@ class AdaptiveGATEvaluator:
         score_types = ["MAP", "MRR"]
 
         overall_summary = {
-            "总模型数": len(self.model_performance_df),
-            "评估时间": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "总模型数": self.experiment_tracker.model_counter,
         }
+
+        # 在DataFrame中添加'is_best_MAP'和'is_best_MRR'列用于标记最佳模型
+        self.model_performance_df["is_best_MAP"] = False
+        self.model_performance_df["is_best_MRR"] = False
 
         for score_type in score_types:
             # 确定对应的列名
             train_score_col = f"train_{score_type}_score"
             test_score_col = f"predict_{score_type}_score"
+            is_best_col = f"is_best_{score_type}"
 
             # 动态计算最佳模型（每个fold中train_score最高的非权重模型）
             best_models = []
@@ -153,10 +157,6 @@ class AdaptiveGATEvaluator:
             for fold in self.model_performance_df["fold_num"].unique():
                 fold_models = self.model_performance_df[
                     (self.model_performance_df["fold_num"] == fold)
-                    & (
-                        self.model_performance_df["model_category"]
-                        != "baseline_weights"
-                    )
                     & (
                         self.model_performance_df["model_category"].isin(
                             ["gat_selfloop", "gat_realedge"]
@@ -166,6 +166,7 @@ class AdaptiveGATEvaluator:
 
                 if not fold_models.empty and train_score_col in fold_models.columns:
                     best_idx = fold_models[train_score_col].idxmax()
+                    self.model_performance_df.loc[best_idx, is_best_col] = True
                     best_models.append(fold_models.loc[best_idx])
 
             # 生成摘要报告
@@ -884,16 +885,9 @@ class AdaptiveGATEvaluator:
                     linewidth=0.7,
                 )
 
-        # 动态找出最佳模型并标记
-        best_models = []
-        for fold in folds:
-            fold_models = all_models[
-                (all_models["fold_num"] == fold)
-                & (all_models["model_category"] != "baseline_weights")
-            ]
-            if not fold_models.empty and train_score_col in fold_models.columns:
-                best_idx = fold_models[train_score_col].idxmax()
-                best_models.append(all_models.loc[best_idx])
+        best_models = self.model_performance_df[
+            self.model_performance_df[f"is_best_{score_type}"] == True
+        ]
 
         # 添加拟合状态到图例
         legend_elements.extend(
@@ -1084,18 +1078,11 @@ class AdaptiveGATEvaluator:
                     )
 
         # 标记最佳模型
-        best_models = []
-        for fold in folds:
-            fold_models = all_models[
-                (all_models["fold_num"] == fold)
-                & (all_models["model_category"] != "baseline_weights")
-                & (all_models["model_category"].isin(["gat_selfloop", "gat_realedge"]))
-            ]
-            if not fold_models.empty and train_score_col in fold_models.columns:
-                best_idx = fold_models[train_score_col].idxmax()
-                best_models.append(all_models.loc[best_idx])
+        best_models = self.model_performance_df[
+            self.model_performance_df[f"is_best_{score_type}"] == True
+        ]
 
-        for model in best_models:
+        for i, model in pd.DataFrame(best_models).iterrows():
             fig.add_trace(
                 go.Scatter(
                     x=[model[train_score_col]],
@@ -1113,7 +1100,7 @@ class AdaptiveGATEvaluator:
                     ),
                     name="最佳模型",
                     hoverinfo="skip",
-                    showlegend=True if model is best_models[0] else False,
+                    showlegend=True if i == 0 else False,
                 )
             )
 
@@ -1202,20 +1189,9 @@ class AdaptiveGATEvaluator:
                 print(f"⚠ 警告: {score_type}分数列不存在，跳过生成最终报告")
                 continue
 
-            # 动态找出最佳模型
-            best_models = []
-            for fold in self.model_performance_df["fold_num"].unique():
-                fold_models = self.model_performance_df[
-                    (self.model_performance_df["fold_num"] == fold)
-                    & (
-                        self.model_performance_df["model_category"]
-                        != "baseline_weights"
-                    )
-                ]
-                if not fold_models.empty and train_score_col in fold_models.columns:
-                    best_idx = fold_models[train_score_col].idxmax()
-                    best_models.append(self.model_performance_df.loc[best_idx])
-
+            best_models = self.model_performance_df[
+                self.model_performance_df[f"is_best_{score_type}"] == True
+            ]
             best_df = pd.DataFrame(best_models)
             if best_df.empty:
                 print(f"⚠ 警告: 无法找到最佳模型，跳过生成{score_type}最终报告")
@@ -1342,12 +1318,12 @@ def main():
         "--output", "-o", help="输出目录 (默认为log_dir/analysis_results)"
     )
 
-    args = parser.parse_args()
+    # args = parser.parse_args()
 
-    # args = argparse.Namespace(
-    #     log_dir="tomcat_auto_20250320041613/",
-    #     output=None,
-    # )
+    args = argparse.Namespace(
+        log_dir="aspectj_GAT_MRR",
+        output=None,
+    )
 
     # 创建评估器并运行分析
     evaluator = AdaptiveGATEvaluator(args.log_dir)
