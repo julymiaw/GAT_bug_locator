@@ -47,6 +47,7 @@ class AdaptiveGATEvaluator:
         self.experiment_tracker = None
         self.model_performance_df = None
 
+        # 模型配对关系(自环模型 -> 真实边模型)
         self.paired_models = {}
 
     def load_logs(self):
@@ -102,25 +103,35 @@ class AdaptiveGATEvaluator:
         return True
 
     def _build_model_pairs(self, df):
-        """找出自环模型和真实边模型的配对关系"""
+        """找出自环模型和真实边模型的配对关系，建立单向映射（自环模型 -> 真实边模型）"""
         # 按fold分组
         for fold_num in df["fold_num"].unique():
             self.paired_models[fold_num] = {}
 
             # 获取当前fold的所有模型ID
             fold_models = df[df["fold_num"] == fold_num]
-            model_ids = fold_models["model_id"].tolist()
+            selfloop_models = fold_models[
+                fold_models["model_category"] == "gat_selfloop"
+            ]
+            realedge_models = fold_models[
+                fold_models["model_category"] == "gat_realedge"
+            ]
 
-            # 检查每对模型
-            for i, model_id1 in enumerate(model_ids):
-                for model_id2 in model_ids[i + 1 :]:
-                    # 使用实验跟踪器的方法判断是否匹配
+            # 检查每个自环模型，寻找匹配的真实边模型
+            for _, selfloop_model in selfloop_models.iterrows():
+                selfloop_id = selfloop_model["model_id"]
+
+                # 寻找匹配的真实边模型
+                for _, realedge_model in realedge_models.iterrows():
+                    realedge_id = realedge_model["model_id"]
+
+                    # 检查两个模型是否匹配
                     if self.experiment_tracker.are_models_matching(
-                        model_id1, model_id2
+                        selfloop_id, realedge_id
                     ):
-                        # 建立双向映射
-                        self.paired_models[fold_num][model_id1] = model_id2
-                        self.paired_models[fold_num][model_id2] = model_id1
+                        # 建立从真实边模型到自环模型的映射
+                        self.paired_models[fold_num][selfloop_id] = realedge_id
+                        break
 
     def analyze_overall_performance(self):
         """分析整体性能并生成摘要"""
@@ -470,79 +481,51 @@ class AdaptiveGATEvaluator:
 
             # 按fold分析
             for fold in self.model_performance_df["fold_num"].unique():
-                # 获取当前fold的模型
                 fold_models = self.model_performance_df[
                     self.model_performance_df["fold_num"] == fold
                 ]
-                fold_self_loop = fold_models[
-                    fold_models["model_category"] == "gat_selfloop"
-                ]
-                fold_real_edge = fold_models[
-                    fold_models["model_category"] == "gat_realedge"
-                ]
-
-                # 使用预处理阶段建立的配对关系
                 fold_pairs = []
+                paired_map = self.paired_models.get(fold, {})
 
-                # 检查是否有配对信息
-                for _, self_loop_model in fold_self_loop.iterrows():
-                    model_id = self_loop_model["model_id"]
+                # 遍历该fold的所有自环模型配对
+                for selfloop_id, realedge_id in paired_map.items():
+                    # 获取自环模型数据
+                    selfloop_model = fold_models[fold_models["model_id"] == selfloop_id]
+                    if selfloop_model.empty:
+                        continue
 
-                    # 获取对应的真实边模型名称
-                    if (
-                        fold in self.paired_models
-                        and model_id in self.paired_models[fold]
-                    ):
-                        real_edge_id = self.paired_models[fold][model_id]
-                        real_edge_models = fold_real_edge[
-                            fold_real_edge["model_id"] == real_edge_id
-                        ]
+                    # 获取对应的真实边模型数据
+                    realedge_model = fold_models[fold_models["model_id"] == realedge_id]
+                    if realedge_model.empty:
+                        continue
 
-                        if not real_edge_models.empty:
-                            real_edge_model = real_edge_models.iloc[0]
-
-                            # 只有当两个模型都有评分时才添加
-                            if (
-                                train_score_col in self_loop_model
-                                and test_score_col in self_loop_model
-                                and train_score_col in real_edge_model
-                                and test_score_col in real_edge_model
-                            ):
-
-                                pair_info = {
-                                    "self_loop_model": model_id,
-                                    "real_edge_model": real_edge_id,
-                                    f"self_loop_train_{score_type}": self_loop_model[
-                                        train_score_col
-                                    ],
-                                    f"real_edge_train_{score_type}": real_edge_model[
-                                        train_score_col
-                                    ],
-                                    f"self_loop_test_{score_type}": self_loop_model[
-                                        test_score_col
-                                    ],
-                                    f"real_edge_test_{score_type}": real_edge_model[
-                                        test_score_col
-                                    ],
-                                    f"real_edge_improvement_{score_type}": real_edge_model[
-                                        test_score_col
-                                    ]
-                                    - self_loop_model[test_score_col],
-                                }
-                                fold_pairs.append(pair_info)
+                    pair_info = {
+                        "self_loop_model": selfloop_id,
+                        "real_edge_model": realedge_id,
+                        f"self_loop_train_{score_type}": selfloop_model[
+                            train_score_col
+                        ].iloc[0],
+                        f"real_edge_train_{score_type}": realedge_model[
+                            train_score_col
+                        ].iloc[0],
+                        f"self_loop_test_{score_type}": selfloop_model[
+                            test_score_col
+                        ].iloc[0],
+                        f"real_edge_test_{score_type}": realedge_model[
+                            test_score_col
+                        ].iloc[0],
+                        f"real_edge_improvement_{score_type}": (
+                            realedge_model[test_score_col].iloc[0]
+                            - selfloop_model[test_score_col].iloc[0]
+                        ),
+                    }
+                    fold_pairs.append(pair_info)
 
                 # 对结果按真实边模型对比自环模型的提升量降序排列
                 fold_pairs.sort(
                     key=lambda x: x[f"real_edge_improvement_{score_type}"], reverse=True
                 )
-
-                # 保存当前fold的统计信息
                 self_loop_stats[fold] = fold_pairs
-
-            # 绘制不同类别模型的对比散点图
-            self.plot_model_categories_comparison(self_loop_stats, score_type)
-
-            self.plot_interactive_model_comparison(self_loop_stats, score_type)
 
             all_results[score_type] = self_loop_stats
 
@@ -723,17 +706,13 @@ class AdaptiveGATEvaluator:
         )
         return all_results
 
-    def plot_model_categories_comparison(self, fold_comparisons, score_type="MAP"):
+    def plot_model_categories_comparison(self, score_type="MAP"):
         """
         绘制不同类别模型的对比散点图(MLP, GAT自环, GAT真实边)
 
         参数:
-            fold_comparisons: 按fold组织的比较数据字典
             score_type: 评分类型 (MAP或MRR)
         """
-        if not fold_comparisons:
-            return
-
         train_score_col = f"train_{score_type}_score"
         test_score_col = f"predict_{score_type}_score"
 
@@ -876,39 +855,34 @@ class AdaptiveGATEvaluator:
             )
 
         # 用虚线连接配对的模型
-        for fold, fold_data in fold_comparisons.items():
-            for pair in fold_data:
-                self_loop_model = all_models[
-                    (all_models["model_id"] == pair["self_loop_model"])
-                    & (all_models["fold_num"] == fold)
-                ]
-                real_edge_model = all_models[
-                    (all_models["model_id"] == pair["real_edge_model"])
-                    & (all_models["fold_num"] == fold)
-                ]
+        for fold in folds:
+            # 获取当前fold的配对关系
+            paired_map = self.paired_models.get(fold, {})
+            if not paired_map:
+                continue
 
-                if (
-                    not self_loop_model.empty
-                    and not real_edge_model.empty
-                    and train_score_col in self_loop_model.columns
-                    and test_score_col in self_loop_model.columns
-                    and train_score_col in real_edge_model.columns
-                    and test_score_col in real_edge_model.columns
-                ):
+            fold_models = all_models[all_models["fold_num"] == fold]
+            for selfloop_id, realedge_id in paired_map.items():
+                selfloop_model = fold_models[fold_models["model_id"] == selfloop_id]
+                realedge_model = fold_models[fold_models["model_id"] == realedge_id]
 
-                    plt.plot(
-                        [
-                            self_loop_model.iloc[0][train_score_col],
-                            real_edge_model.iloc[0][train_score_col],
-                        ],
-                        [
-                            self_loop_model.iloc[0][test_score_col],
-                            real_edge_model.iloc[0][test_score_col],
-                        ],
-                        "k--",  # 黑色虚线
-                        alpha=0.5,
-                        linewidth=0.7,
-                    )
+                if selfloop_model.empty or realedge_model.empty:
+                    continue
+
+                # 画连接线
+                plt.plot(
+                    [
+                        selfloop_model[train_score_col].iloc[0],
+                        realedge_model[train_score_col].iloc[0],
+                    ],
+                    [
+                        selfloop_model[test_score_col].iloc[0],
+                        realedge_model[test_score_col].iloc[0],
+                    ],
+                    "k--",  # 黑色虚线
+                    alpha=0.5,
+                    linewidth=0.7,
+                )
 
         # 动态找出最佳模型并标记
         best_models = []
@@ -996,17 +970,13 @@ class AdaptiveGATEvaluator:
         )
         plt.close()
 
-    def plot_interactive_model_comparison(self, fold_comparisons, score_type="MAP"):
+    def plot_interactive_model_comparison(self, score_type="MAP"):
         """
         创建交互式散点图，鼠标悬停时显示模型详细信息
 
         参数:
-            fold_comparisons: 按fold组织的比较数据字典
             score_type: 评分类型 (MAP或MRR)
         """
-        if not fold_comparisons:
-            return
-
         train_score_col = f"train_{score_type}_score"
         test_score_col = f"predict_{score_type}_score"
 
@@ -1148,34 +1118,38 @@ class AdaptiveGATEvaluator:
             )
 
         # 添加连接配对模型的线
-        for fold, fold_data in fold_comparisons.items():
-            for pair in fold_data:
-                self_loop_model = all_models[
-                    (all_models["model_id"] == pair["self_loop_model"])
-                    & (all_models["fold_num"] == fold)
-                ]
-                real_edge_model = all_models[
-                    (all_models["model_id"] == pair["real_edge_model"])
-                    & (all_models["fold_num"] == fold)
-                ]
+        for fold in folds:
+            # 获取当前fold的配对关系（现在是单向的selfloop -> realedge）
+            paired_map = self.paired_models.get(fold, {})
+            if not paired_map:
+                continue
 
-                if not self_loop_model.empty and not real_edge_model.empty:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[
-                                self_loop_model.iloc[0][train_score_col],
-                                real_edge_model.iloc[0][train_score_col],
-                            ],
-                            y=[
-                                self_loop_model.iloc[0][test_score_col],
-                                real_edge_model.iloc[0][test_score_col],
-                            ],
-                            mode="lines",
-                            line=dict(color="grey", width=1, dash="dash"),
-                            showlegend=False,
-                            hoverinfo="skip",
-                        )
+            fold_models = all_models[all_models["fold_num"] == fold]
+
+            for selfloop_id, realedge_id in paired_map.items():
+                selfloop_model = fold_models[fold_models["model_id"] == selfloop_id]
+                realedge_model = fold_models[fold_models["model_id"] == realedge_id]
+
+                if selfloop_model.empty or realedge_model.empty:
+                    continue
+
+                # 画连接线
+                fig.add_trace(
+                    go.Scatter(
+                        x=[
+                            selfloop_model.iloc[0][train_score_col],
+                            realedge_model.iloc[0][train_score_col],
+                        ],
+                        y=[
+                            selfloop_model.iloc[0][test_score_col],
+                            realedge_model.iloc[0][test_score_col],
+                        ],
+                        mode="lines",
+                        line=dict(color="grey", width=1, dash="dash"),
+                        showlegend=False,
+                        hoverinfo="skip",
                     )
+                )
 
         # 设置图表布局
         fig.update_layout(
@@ -1350,6 +1324,11 @@ class AdaptiveGATEvaluator:
 
         # 生成最终报告
         self.generate_final_report()
+
+        # 在所有分析完成后绘制综合性的模型对比图
+        for score_type in ["MAP", "MRR"]:
+            self.plot_model_categories_comparison(score_type)
+            self.plot_interactive_model_comparison(score_type)
 
         print(f"\n✓ 全部分析完成！结果保存在: {self.output_dir}")
 
