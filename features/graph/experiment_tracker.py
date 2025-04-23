@@ -30,15 +30,14 @@ class ExperimentTracker:
 
     def __init__(self):
         """初始化模型注册表"""
-        self.models = {}  # 模型实例字典 {model_id: model_instance}
         self.model_params = {}  # 模型参数字典 {model_id: {param_name: param_value}}
         self.model_results = {}  # 模型结果字典 {model_id: {metric_name: metric_value}}
+        self.training_summaries = {}  # {model_id: training_summary_dict}
+
         self.model_counter = 0  # 模型计数器
         self.fold_counters = {}  # 每个折的单独计数器
 
-        self.training_time_stats = (
-            {}
-        )  # {fold_num: {"time": 秒数, "bugs": 数量, "files": 数量}}
+        self.training_time_stats = {}
 
         # 实验元数据
         self.metadata = {
@@ -69,9 +68,6 @@ class ExperimentTracker:
         self.fold_counters[fold_num] += 1
         self.model_counter += 1
 
-        # 存储模型实例
-        self.models[model_id] = model
-
         # 自动从模型实例提取参数
         params = {}
         for param_name in ModelParameters.get_all_params():
@@ -87,6 +83,7 @@ class ExperimentTracker:
 
         self.model_params[model_id] = params
         self.model_results[model_id] = {}
+        self.training_summaries[model_id] = {}
 
         return model_id
 
@@ -100,7 +97,7 @@ class ExperimentTracker:
             metric_value: 指标值
         """
         if model_id not in self.model_results:
-            self.model_results[model_id] = {}
+            raise ValueError(f"模型 {model_id} 未注册，不能更新结果！")
 
         self.model_results[model_id][metric_name] = metric_value
 
@@ -112,12 +109,10 @@ class ExperimentTracker:
             model_id: 模型唯一标识符
             training_summary: 包含训练终止信息的字典
         """
-        if model_id not in self.model_results:
-            self.model_results[model_id] = {}
+        if model_id not in self.training_summaries:
+            raise ValueError(f"模型 {model_id} 未注册，不能更新训练摘要！")
 
-        # 将训练总结信息添加到模型结果中
-        for key, value in training_summary.items():
-            self.model_results[model_id][f"training_{key}"] = value
+        self.training_summaries[model_id] = training_summary
 
     def record_training_time(self, fold_num, time_seconds, bugs_count, files_count):
         """
@@ -189,22 +184,6 @@ class ExperimentTracker:
         # 所有参数匹配
         return True
 
-    def get_training_time_stats(self):
-        """获取训练时间统计"""
-        return self.training_time_stats
-
-    def get_model(self, model_id):
-        """获取模型实例"""
-        return self.models.get(model_id)
-
-    def get_params(self, model_id):
-        """获取模型参数"""
-        return self.model_params.get(model_id)
-
-    def get_results(self, model_id):
-        """获取模型结果"""
-        return self.model_results.get(model_id)
-
     def to_dataframe(self):
         """
         将模型参数和结果转换为DataFrame
@@ -238,7 +217,7 @@ class ExperimentTracker:
         """
 
         # 更新元数据
-        self.metadata["total_models"] = len(self.model_params)
+        self.metadata["total_models"] = self.model_counter
         self.metadata["timestamp"] = datetime.datetime.now().isoformat()
 
         data = {
@@ -254,6 +233,9 @@ class ExperimentTracker:
                 ),
                 "results": self._convert_to_json_serializable(
                     self.model_results.get(model_id, {})
+                ),
+                "training_summary": self._convert_to_json_serializable(
+                    self.training_summaries.get(model_id, {})
                 ),
             }
 
@@ -274,6 +256,9 @@ class ExperimentTracker:
             for model_id, model_data in data["models"].items():
                 self.model_params[model_id] = model_data.get("params", {})
                 self.model_results[model_id] = model_data.get("results", {})
+                self.training_summaries[model_id] = model_data.get(
+                    "training_summary", {}
+                )
 
             # 加载元数据
             if "metadata" in data:
@@ -299,10 +284,3 @@ class ExperimentTracker:
             return obj.tolist()
         else:
             return obj
-
-    def clear(self):
-        """清空注册表"""
-        self.models.clear()
-        self.model_params.clear()
-        self.model_results.clear()
-        # 保留计数器值和元数据

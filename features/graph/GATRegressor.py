@@ -256,6 +256,7 @@ class GATRegressor:
         self.n_iter_no_change = n_iter_no_change
         self.use_self_loops_only = use_self_loops_only
         self.metric_type = metric_type
+        self.min_score_ratio = min_score_ratio
 
         # 模型注册时进行初始化
         self.model_id: str = None
@@ -288,7 +289,7 @@ class GATRegressor:
 
         weight_score = evaluate_fold(node_features, score, self.metric_type)
 
-        min_acceptable_score = weight_score * 0.8
+        min_acceptable_score = weight_score * self.min_score_ratio
 
         # 添加修正后的分数用于训练
         fix_score = score + node_features["used_in_fix"] * np.max(score)
@@ -331,12 +332,14 @@ class GATRegressor:
 
         # 训练循环
         self.model.train()
-        best_train_loss = float("inf")  # 用于损失收敛的最佳训练损失
+        best_score = -float("inf")  # 用于评估分数的最佳值
         no_improvement_count = 0
         best_weights = None
         exceeded_weight_score = False
         current_score = 0.0
-        best_epoch = 0
+
+        # 初始化训练日志
+        self.training_logs = []
 
         for epoch in range(self.max_iter):
             # 如果需要，打乱数据
@@ -375,11 +378,10 @@ class GATRegressor:
             current_score = evaluate_fold(node_features, predictions, self.metric_type)
             exceeded_weight_score = current_score >= min_acceptable_score
 
-            # 检查损失是否有改进
-            if epoch == 0 or best_train_loss - avg_train_loss > self.tol:
-                best_train_loss = avg_train_loss
+            # 检查评估分数是否有改进
+            if epoch == 0 or current_score - best_score > self.tol:
+                best_score = current_score
                 no_improvement_count = 0
-                best_epoch = epoch
                 best_weights = {
                     name: param.clone().detach()
                     for name, param in self.model.state_dict().items()
@@ -387,14 +389,14 @@ class GATRegressor:
             else:
                 no_improvement_count += 1
 
-            final_metrics = {
-                "epoch": epoch + 1,
-                "train_loss": avg_train_loss,
-                "current_score": current_score,
-                "weight_score": weight_score,
-                "exceeded_weight_score": exceeded_weight_score,
-                "no_improvement_count": no_improvement_count,
-            }
+            # 记录每一轮日志
+            self.training_logs.append(
+                {
+                    "epoch": epoch + 1,
+                    "train_loss": avg_train_loss,
+                    "current_score": current_score,
+                }
+            )
 
             # 检查是否应该提前停止
             if no_improvement_count >= self.n_iter_no_change and exceeded_weight_score:
@@ -417,12 +419,9 @@ class GATRegressor:
         # 保存训练终止信息
         self.training_summary = {
             "stop_reason": stop_reason,
-            "best_epoch": best_epoch + 1,
-            "final_epoch": final_metrics["epoch"],
-            "final_score": final_metrics["current_score"],
             "weight_score": weight_score,
-            "performance_ratio": final_metrics["current_score"] / weight_score,
-            "final_loss": final_metrics["train_loss"],
+            "all_scores": [log["current_score"] for log in self.training_logs],
+            "all_losses": [log["train_loss"] for log in self.training_logs],
         }
 
         return self
