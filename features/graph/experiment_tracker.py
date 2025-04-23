@@ -198,7 +198,7 @@ class ExperimentTracker:
             model_data = {
                 "model_id": model_id,
                 **self.model_params[model_id],
-                **self.model_results.get(model_id, {}),
+                **self.model_results[model_id],
             }
             all_data.append(model_data)
 

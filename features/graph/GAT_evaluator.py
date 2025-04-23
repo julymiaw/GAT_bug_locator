@@ -22,6 +22,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from typing import Dict, List
 import argparse
+from GATRegressor import ModelParameters
 from experiment_tracker import ExperimentTracker
 
 # Linux下设置
@@ -1019,18 +1020,7 @@ class AdaptiveGATEvaluator:
                 params.append(f"拟合状态: {row['fitting_status_' + score_type]}")
 
             # 添加模型参数
-            model_params = [
-                "heads",
-                "hidden_dim",
-                "dropout",
-                "alpha",
-                "lr",
-                "penalty",
-                "loss",
-                "max_iter",
-                "n_iter_no_change",
-                "use_self_loops_only",
-            ]
+            model_params = ModelParameters.get_all_params()
 
             params.append("<b>模型参数:</b>")
             for param in model_params:

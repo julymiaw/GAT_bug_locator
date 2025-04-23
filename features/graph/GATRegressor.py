@@ -18,8 +18,6 @@ class ModelParameters:
     # 默认参数值
     DEFAULTS = {
         # 模型结构参数
-        "node_feature_columns": None,  # 必须提供
-        "dependency_feature_columns": None,  # 必须提供
         "hidden_dim": 16,
         "heads": None,
         "dropout": 0.3,
