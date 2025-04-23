@@ -723,218 +723,6 @@ class AdaptiveGATEvaluator:
         )
         return all_results
 
-    def plot_interactive_model_comparison(self, fold_comparisons, score_type="MAP"):
-        """
-        创建交互式散点图，鼠标悬停时显示模型详细信息
-
-        参数:
-            fold_comparisons: 按fold组织的比较数据字典
-            score_type: 评分类型 (MAP或MRR)
-        """
-        if not fold_comparisons:
-            return
-
-        train_score_col = f"train_{score_type}_score"
-        test_score_col = f"predict_{score_type}_score"
-
-        # 准备数据
-        all_models = self.model_performance_df.copy()
-
-        # 模型类别名称映射
-        category_names = {
-            "baseline_mlp": "MLP模型",
-            "gat_selfloop": "GAT自环模型",
-            "gat_realedge": "GAT真实边模型",
-            "baseline_weights": "权重法",
-        }
-
-        # 为每个fold分配不同颜色
-        folds = all_models["fold_num"].unique()
-        colorscale = px.colors.qualitative.Set1
-        fold_colors = {
-            fold: colorscale[i % len(colorscale)] for i, fold in enumerate(folds)
-        }
-
-        # 创建图表
-        fig = go.Figure()
-
-        # 生成自定义悬停信息
-        def create_hover_text(row):
-            # 收集模型的所有参数和结果
-            params = [f"<b>{row['model_id']}</b>"]
-            params.append(
-                f"类别: {category_names.get(row['model_category'], row['model_category'])}"
-            )
-
-            # 添加基本信息
-            params.append(f"折: {row['fold_num']}")
-            params.append(f"训练{score_type}: {row[train_score_col]:.4f}")
-            params.append(f"测试{score_type}: {row[test_score_col]:.4f}")
-
-            # 添加训练信息
-            if "training_stop_reason" in row:
-                params.append(f"停止原因: {row['training_stop_reason']}")
-            if "training_best_epoch" in row:
-                params.append(f"最佳轮次: {row['training_best_epoch']}")
-            if "training_final_epoch" in row:
-                params.append(f"总轮次: {row['training_final_epoch']}")
-            if "fitting_status_" + score_type in row:
-                params.append(f"拟合状态: {row['fitting_status_' + score_type]}")
-
-            # 添加模型参数
-            model_params = [
-                "heads",
-                "hidden_dim",
-                "dropout",
-                "alpha",
-                "lr",
-                "penalty",
-                "loss",
-                "max_iter",
-                "n_iter_no_change",
-                "use_self_loops_only",
-            ]
-
-            params.append("<b>模型参数:</b>")
-            for param in model_params:
-                if param in row and not pd.isna(row[param]):
-                    params.append(f"{param}: {row[param]}")
-
-            return "<br>".join(params)
-
-        # 添加所有模型点
-        for fold in folds:
-            fold_models = all_models[all_models["fold_num"] == fold]
-
-            # 按模型类别绘制
-            for category in category_names:
-                category_models = fold_models[fold_models["model_category"] == category]
-
-                if not category_models.empty:
-                    # 生成hover文本
-                    hover_texts = category_models.apply(
-                        create_hover_text, axis=1
-                    ).tolist()
-
-                    # 添加散点
-                    fig.add_trace(
-                        go.Scatter(
-                            x=category_models[train_score_col],
-                            y=category_models[test_score_col],
-                            mode="markers",
-                            marker=dict(
-                                size=12,
-                                color=fold_colors[fold],
-                                symbol={
-                                    "baseline_mlp": "triangle-up",
-                                    "gat_selfloop": "square",
-                                    "gat_realedge": "circle",
-                                    "baseline_weights": "x",
-                                }.get(category, "circle"),
-                                line=dict(width=1, color="DarkSlateGrey"),
-                            ),
-                            name=f"{category_names[category]} (折 {fold})",
-                            text=hover_texts,
-                            hoverinfo="text",
-                            showlegend=True,
-                        )
-                    )
-
-        # 标记最佳模型
-        best_models = []
-        for fold in folds:
-            fold_models = all_models[
-                (all_models["fold_num"] == fold)
-                & (all_models["model_category"] != "baseline_weights")
-                & (all_models["model_category"].isin(["gat_selfloop", "gat_realedge"]))
-            ]
-            if not fold_models.empty and train_score_col in fold_models.columns:
-                best_idx = fold_models[train_score_col].idxmax()
-                best_models.append(all_models.loc[best_idx])
-
-        for model in best_models:
-            fig.add_trace(
-                go.Scatter(
-                    x=[model[train_score_col]],
-                    y=[model[test_score_col]],
-                    mode="markers",
-                    marker=dict(
-                        size=18,
-                        color="rgba(0,0,0,0)",
-                        symbol={
-                            "baseline_mlp": "triangle-up",
-                            "gat_selfloop": "square",
-                            "gat_realedge": "circle",
-                        }.get(model["model_category"], "circle"),
-                        line=dict(width=2, color="gold"),
-                    ),
-                    name="最佳模型",
-                    hoverinfo="skip",
-                    showlegend=True if model is best_models[0] else False,
-                )
-            )
-
-        # 添加连接配对模型的线
-        for fold, fold_data in fold_comparisons.items():
-            for pair in fold_data:
-                self_loop_model = all_models[
-                    (all_models["model_id"] == pair["self_loop_model"])
-                    & (all_models["fold_num"] == fold)
-                ]
-                real_edge_model = all_models[
-                    (all_models["model_id"] == pair["real_edge_model"])
-                    & (all_models["fold_num"] == fold)
-                ]
-
-                if not self_loop_model.empty and not real_edge_model.empty:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=[
-                                self_loop_model.iloc[0][train_score_col],
-                                real_edge_model.iloc[0][train_score_col],
-                            ],
-                            y=[
-                                self_loop_model.iloc[0][test_score_col],
-                                real_edge_model.iloc[0][test_score_col],
-                            ],
-                            mode="lines",
-                            line=dict(color="grey", width=1, dash="dash"),
-                            showlegend=False,
-                            hoverinfo="skip",
-                        )
-                    )
-
-        # 设置图表布局
-        fig.update_layout(
-            title=f"不同类别模型{score_type}性能对比（交互式）",
-            xaxis_title=f"回归阶段{score_type}得分",
-            yaxis_title=f"测试阶段{score_type}得分",
-            hovermode="closest",
-            legend=dict(
-                yanchor="top",
-                y=0.99,
-                xanchor="left",
-                x=0.01,
-                bgcolor="rgba(255, 255, 255, 0.5)",
-            ),
-            width=900,
-            height=800,
-        )
-
-        # 设置相等的坐标轴比例
-        fig.update_yaxes(
-            scaleanchor="x",
-            scaleratio=1,
-        )
-
-        # 保存为HTML文件（可在浏览器中交互）
-        html_path = os.path.join(
-            self.output_dir, f"interactive_model_comparison_{score_type}.html"
-        )
-        fig.write_html(html_path)
-
-        return html_path
-
     def plot_model_categories_comparison(self, fold_comparisons, score_type="MAP"):
         """
         绘制不同类别模型的对比散点图(MLP, GAT自环, GAT真实边)
@@ -1207,6 +995,218 @@ class AdaptiveGATEvaluator:
             )
         )
         plt.close()
+
+    def plot_interactive_model_comparison(self, fold_comparisons, score_type="MAP"):
+        """
+        创建交互式散点图，鼠标悬停时显示模型详细信息
+
+        参数:
+            fold_comparisons: 按fold组织的比较数据字典
+            score_type: 评分类型 (MAP或MRR)
+        """
+        if not fold_comparisons:
+            return
+
+        train_score_col = f"train_{score_type}_score"
+        test_score_col = f"predict_{score_type}_score"
+
+        # 准备数据
+        all_models = self.model_performance_df.copy()
+
+        # 模型类别名称映射
+        category_names = {
+            "baseline_mlp": "MLP模型",
+            "gat_selfloop": "GAT自环模型",
+            "gat_realedge": "GAT真实边模型",
+            "baseline_weights": "权重法",
+        }
+
+        # 为每个fold分配不同颜色
+        folds = all_models["fold_num"].unique()
+        colorscale = px.colors.qualitative.Set1
+        fold_colors = {
+            fold: colorscale[i % len(colorscale)] for i, fold in enumerate(folds)
+        }
+
+        # 创建图表
+        fig = go.Figure()
+
+        # 生成自定义悬停信息
+        def create_hover_text(row):
+            # 收集模型的所有参数和结果
+            params = [f"<b>{row['model_id']}</b>"]
+            params.append(
+                f"类别: {category_names.get(row['model_category'], row['model_category'])}"
+            )
+
+            # 添加基本信息
+            params.append(f"折: {row['fold_num']}")
+            params.append(f"训练{score_type}: {row[train_score_col]:.4f}")
+            params.append(f"测试{score_type}: {row[test_score_col]:.4f}")
+
+            # 添加训练信息
+            if "training_stop_reason" in row:
+                params.append(f"停止原因: {row['training_stop_reason']}")
+            if "training_best_epoch" in row:
+                params.append(f"最佳轮次: {row['training_best_epoch']}")
+            if "training_final_epoch" in row:
+                params.append(f"总轮次: {row['training_final_epoch']}")
+            if "fitting_status_" + score_type in row:
+                params.append(f"拟合状态: {row['fitting_status_' + score_type]}")
+
+            # 添加模型参数
+            model_params = [
+                "heads",
+                "hidden_dim",
+                "dropout",
+                "alpha",
+                "lr",
+                "penalty",
+                "loss",
+                "max_iter",
+                "n_iter_no_change",
+                "use_self_loops_only",
+            ]
+
+            params.append("<b>模型参数:</b>")
+            for param in model_params:
+                if param in row and not pd.isna(row[param]):
+                    params.append(f"{param}: {row[param]}")
+
+            return "<br>".join(params)
+
+        # 添加所有模型点
+        for fold in folds:
+            fold_models = all_models[all_models["fold_num"] == fold]
+
+            # 按模型类别绘制
+            for category in category_names:
+                category_models = fold_models[fold_models["model_category"] == category]
+
+                if not category_models.empty:
+                    # 生成hover文本
+                    hover_texts = category_models.apply(
+                        create_hover_text, axis=1
+                    ).tolist()
+
+                    # 添加散点
+                    fig.add_trace(
+                        go.Scatter(
+                            x=category_models[train_score_col],
+                            y=category_models[test_score_col],
+                            mode="markers",
+                            marker=dict(
+                                size=12,
+                                color=fold_colors[fold],
+                                symbol={
+                                    "baseline_mlp": "triangle-up",
+                                    "gat_selfloop": "square",
+                                    "gat_realedge": "circle",
+                                    "baseline_weights": "x",
+                                }.get(category, "circle"),
+                                line=dict(width=1, color="DarkSlateGrey"),
+                            ),
+                            name=f"{category_names[category]} (折 {fold})",
+                            text=hover_texts,
+                            hoverinfo="text",
+                            showlegend=True,
+                        )
+                    )
+
+        # 标记最佳模型
+        best_models = []
+        for fold in folds:
+            fold_models = all_models[
+                (all_models["fold_num"] == fold)
+                & (all_models["model_category"] != "baseline_weights")
+                & (all_models["model_category"].isin(["gat_selfloop", "gat_realedge"]))
+            ]
+            if not fold_models.empty and train_score_col in fold_models.columns:
+                best_idx = fold_models[train_score_col].idxmax()
+                best_models.append(all_models.loc[best_idx])
+
+        for model in best_models:
+            fig.add_trace(
+                go.Scatter(
+                    x=[model[train_score_col]],
+                    y=[model[test_score_col]],
+                    mode="markers",
+                    marker=dict(
+                        size=18,
+                        color="rgba(0,0,0,0)",
+                        symbol={
+                            "baseline_mlp": "triangle-up",
+                            "gat_selfloop": "square",
+                            "gat_realedge": "circle",
+                        }.get(model["model_category"], "circle"),
+                        line=dict(width=2, color="gold"),
+                    ),
+                    name="最佳模型",
+                    hoverinfo="skip",
+                    showlegend=True if model is best_models[0] else False,
+                )
+            )
+
+        # 添加连接配对模型的线
+        for fold, fold_data in fold_comparisons.items():
+            for pair in fold_data:
+                self_loop_model = all_models[
+                    (all_models["model_id"] == pair["self_loop_model"])
+                    & (all_models["fold_num"] == fold)
+                ]
+                real_edge_model = all_models[
+                    (all_models["model_id"] == pair["real_edge_model"])
+                    & (all_models["fold_num"] == fold)
+                ]
+
+                if not self_loop_model.empty and not real_edge_model.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=[
+                                self_loop_model.iloc[0][train_score_col],
+                                real_edge_model.iloc[0][train_score_col],
+                            ],
+                            y=[
+                                self_loop_model.iloc[0][test_score_col],
+                                real_edge_model.iloc[0][test_score_col],
+                            ],
+                            mode="lines",
+                            line=dict(color="grey", width=1, dash="dash"),
+                            showlegend=False,
+                            hoverinfo="skip",
+                        )
+                    )
+
+        # 设置图表布局
+        fig.update_layout(
+            title=f"不同类别模型{score_type}性能对比（交互式）",
+            xaxis_title=f"回归阶段{score_type}得分",
+            yaxis_title=f"测试阶段{score_type}得分",
+            hovermode="closest",
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01,
+                bgcolor="rgba(255, 255, 255, 0.5)",
+            ),
+            width=900,
+            height=800,
+        )
+
+        # 设置相等的坐标轴比例
+        fig.update_yaxes(
+            scaleanchor="x",
+            scaleratio=1,
+        )
+
+        # 保存为HTML文件（可在浏览器中交互）
+        html_path = os.path.join(
+            self.output_dir, f"interactive_model_comparison_{score_type}.html"
+        )
+        fig.write_html(html_path)
+
+        return html_path
 
     def generate_final_report(self):
         """生成最终综合报告"""
