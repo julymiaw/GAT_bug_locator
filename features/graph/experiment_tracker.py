@@ -200,6 +200,28 @@ class ExperimentTracker:
                 **self.model_params[model_id],
                 **self.model_results[model_id],
             }
+
+            # 添加训练摘要字段
+            if model_id in self.training_summaries:
+                summary = self.training_summaries[model_id]
+
+                if "stop_reason" in summary:
+                    model_data["stop_reason"] = summary["stop_reason"]
+
+                # 计算最佳分数和轮次
+                if "all_scores" in summary and summary["all_scores"]:
+                    best_score_idx = np.argmax(summary["all_scores"])
+                    model_data["best_score"] = summary["all_scores"][best_score_idx]
+                    model_data["best_epoch"] = best_score_idx + 1
+                    model_data["final_epoch"] = len(summary["all_scores"])
+                    model_data["final_score"] = summary["all_scores"][-1]
+
+                # 添加权重分数和性能比率
+                if "weight_score" in summary:
+                    model_data["performance_ratio"] = (
+                        model_data["final_score"] / summary["weight_score"]
+                    )
+
             all_data.append(model_data)
 
         # 创建DataFrame
