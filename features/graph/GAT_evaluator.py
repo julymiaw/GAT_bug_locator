@@ -788,6 +788,10 @@ class AdaptiveGATEvaluator:
         参数:
             score_type: 评分类型 (MAP或MRR)
         """
+        # 创建保存目录
+        model_comparison_dir = os.path.join(self.output_dir, "model_comparison")
+        os.makedirs(model_comparison_dir, exist_ok=True)
+
         train_score_col = f"train_{score_type}_score"
         test_score_col = f"predict_{score_type}_score"
         fitting_status_col = f"fitting_status_{score_type}"
@@ -1009,7 +1013,7 @@ class AdaptiveGATEvaluator:
         plt.tight_layout()
         plt.savefig(
             os.path.join(
-                self.output_dir, f"model_categories_comparison_{score_type}.png"
+                model_comparison_dir, f"model_categories_comparison_{score_type}.png"
             )
         )
         plt.close()
@@ -1076,6 +1080,10 @@ class AdaptiveGATEvaluator:
         参数:
             score_type: 评分类型 (MAP或MRR)
         """
+        # 创建保存目录
+        model_comparison_dir = os.path.join(self.output_dir, "model_comparison")
+        os.makedirs(model_comparison_dir, exist_ok=True)
+
         train_score_col = f"train_{score_type}_score"
         test_score_col = f"predict_{score_type}_score"
         fitting_status_col = f"fitting_status_{score_type}"
@@ -1266,7 +1274,7 @@ class AdaptiveGATEvaluator:
 
         # 保存为HTML文件（可在浏览器中交互）
         html_path = os.path.join(
-            self.output_dir, f"interactive_model_comparison_{score_type}.html"
+            model_comparison_dir, f"interactive_model_comparison_{score_type}.html"
         )
         fig.write_html(html_path)
 
