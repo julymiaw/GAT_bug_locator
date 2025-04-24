@@ -874,6 +874,7 @@ class AdaptiveGATEvaluator:
         """
         train_score_col = f"train_{score_type}_score"
         test_score_col = f"predict_{score_type}_score"
+        fitting_status_col = f"fitting_status_{score_type}"
 
         # 准备数据
         all_models = self.model_performance_df.copy()
@@ -884,6 +885,14 @@ class AdaptiveGATEvaluator:
             "gat_selfloop": "GAT自环模型",
             "gat_realedge": "GAT真实边模型",
             "baseline_weights": "权重法",
+        }
+
+        # 拟合状态的边框颜色 - 与普通图保持一致
+        fitting_edge_colors = {
+            "过拟合": "red",
+            "欠拟合": "blue",
+            "正常拟合": "green",
+            "未知": None,
         }
 
         # 为每个fold分配不同颜色
@@ -909,6 +918,10 @@ class AdaptiveGATEvaluator:
             params.append(f"训练{score_type}: {row[train_score_col]:.4f}")
             params.append(f"测试{score_type}: {row[test_score_col]:.4f}")
 
+            # 添加拟合状态
+            if fitting_status_col in row and not pd.isna(row[fitting_status_col]):
+                params.append(f"拟合状态: {row[fitting_status_col]}")
+
             # 添加训练信息
             if "training_stop_reason" in row:
                 params.append(f"停止原因: {row['training_stop_reason']}")
@@ -916,8 +929,6 @@ class AdaptiveGATEvaluator:
                 params.append(f"最佳轮次: {row['training_best_epoch']}")
             if "training_final_epoch" in row:
                 params.append(f"总轮次: {row['training_final_epoch']}")
-            if "fitting_status_" + score_type in row:
-                params.append(f"拟合状态: {row['fitting_status_' + score_type]}")
 
             # 添加模型参数
             model_params = ModelParameters.get_all_params()
@@ -967,6 +978,44 @@ class AdaptiveGATEvaluator:
                         )
                     )
 
+                    # 根据拟合状态添加边框
+                    for fitting_status, edge_color in fitting_edge_colors.items():
+                        if edge_color:  # 只为有颜色的拟合状态添加边框
+                            status_models = category_models[
+                                category_models[fitting_status_col] == fitting_status
+                            ]
+
+                            if not status_models.empty:
+                                status_hover_texts = status_models.apply(
+                                    create_hover_text, axis=1
+                                ).tolist()
+
+                                # 添加边框散点
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=status_models[train_score_col],
+                                        y=status_models[test_score_col],
+                                        mode="markers",
+                                        marker=dict(
+                                            size=16,  # 稍大一点以便边框可见
+                                            color="rgba(0,0,0,0)",  # 透明填充
+                                            symbol={
+                                                "baseline_mlp": "triangle-up",
+                                                "gat_selfloop": "square",
+                                                "gat_realedge": "circle",
+                                            }.get(category, "circle"),
+                                            line=dict(width=2, color=edge_color),
+                                        ),
+                                        name=f"{fitting_status} (折 {fold})",
+                                        text=status_hover_texts,
+                                        hoverinfo="text",
+                                        showlegend=(
+                                            fold == folds[0]
+                                            and category == next(iter(category_names))
+                                        ),  # 只为第一个fold和第一个类别显示图例
+                                    )
+                                )
+
         # 标记最佳模型
         best_models = self.model_performance_df[
             self.model_performance_df[f"is_best_{score_type}"] == True
@@ -990,7 +1039,7 @@ class AdaptiveGATEvaluator:
                     ),
                     name="最佳模型",
                     hoverinfo="skip",
-                    showlegend=True if i == 0 else False,
+                    showlegend=(i == 0),
                 )
             )
 
@@ -1208,12 +1257,12 @@ def main():
         "--output", "-o", help="输出目录 (默认为log_dir/analysis_results)"
     )
 
-    # args = parser.parse_args()
+    args = parser.parse_args()
 
-    args = argparse.Namespace(
-        log_dir="aspectj_GAT_MRR",
-        output=None,
-    )
+    # args = argparse.Namespace(
+    #     log_dir="aspectj_GAT_MRR",
+    #     output=None,
+    # )
 
     # 创建评估器并运行分析
     evaluator = AdaptiveGATEvaluator(args.log_dir)
