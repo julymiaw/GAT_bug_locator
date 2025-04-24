@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from plotly.subplots import make_subplots
 from matplotlib.lines import Line2D
 import plotly.graph_objects as go
 import plotly.express as px
@@ -632,6 +633,154 @@ class AdaptiveGATEvaluator:
                     fitting_status_col,
                 ] = status
 
+    def plot_interactive_training_curves(self):
+        """
+        创建交互式训练曲线图表，展示评估分数和损失随训练轮次的变化
+        """
+        # 创建保存目录
+        training_curves_dir = os.path.join(self.output_dir, "training_curves")
+        os.makedirs(training_curves_dir, exist_ok=True)
+
+        # 获取所有模型数据
+        all_models = self.model_performance_df.copy()
+
+        # 排除权重法模型，因为它们没有训练曲线
+        nn_models = all_models[all_models["model_category"] != "baseline_weights"]
+
+        # 检查是否有足够的数据
+        if nn_models.empty:
+            print("⚠ 警告: 没有足够的模型数据来绘制交互式训练曲线")
+            return
+
+        # 获取评估指标类型 (从模型参数中获取)
+        metric_type = "MAP"  # 默认值
+        for _, model_row in nn_models.iterrows():
+            if "metric_type" in model_row and not pd.isna(model_row["metric_type"]):
+                metric_type = model_row["metric_type"]
+                break
+
+        # 模型类别名称映射
+        category_names = {
+            "baseline_mlp": "MLP模型",
+            "gat_selfloop": "GAT自环模型",
+            "gat_realedge": "GAT真实边模型",
+        }
+
+        # 为每个fold分配不同颜色
+        folds = nn_models["fold_num"].unique()
+        colorscale = px.colors.qualitative.Set1
+        fold_colors = {
+            fold: colorscale[i % len(colorscale)] for i, fold in enumerate(folds)
+        }
+
+        # 为每种模型类别定义线型
+        dash_styles = {
+            "baseline_mlp": "solid",  # 实线
+            "gat_selfloop": "dash",  # 虚线
+            "gat_realedge": "dashdot",  # 点划线
+        }
+
+        # 创建图表
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            subplot_titles=(
+                f"模型训练过程中的{metric_type}评估分数变化",
+                "模型训练过程中的损失变化",
+            ),
+            shared_xaxes=True,
+            vertical_spacing=0.1,
+        )
+
+        for _, model_row in nn_models.iterrows():
+            model_id = model_row["model_id"]
+            fold = model_row["fold_num"]
+            category = model_row["model_category"]
+
+            # 获取训练摘要，检查是否包含训练曲线数据
+            if model_id not in self.experiment_tracker.training_summaries:
+                continue
+
+            summary = self.experiment_tracker.training_summaries[model_id]
+
+            if "all_scores" not in summary or not summary["all_scores"]:
+                continue
+
+            # 获取训练轮次、分数和损失
+            epochs = list(range(1, len(summary["all_scores"]) + 1))
+            scores = summary["all_scores"]
+            losses = summary.get("all_losses", [])
+
+            # 生成悬停文本
+            hover_text = []
+            for i, (epoch, score) in enumerate(zip(epochs, scores)):
+                loss_text = f"损失: {losses[i]:.6f}" if i < len(losses) else ""
+                model_text = (
+                    f"模型: {model_id}<br>类别: {category_names[category]}<br>折: {fold}"
+                )
+                epoch_text = f"轮次: {epoch}<br>{metric_type}分数: {score:.6f}"
+                if loss_text:
+                    hover_text.append(f"{model_text}<br>{epoch_text}<br>{loss_text}")
+                else:
+                    hover_text.append(f"{model_text}<br>{epoch_text}")
+
+            # 添加分数曲线
+            fig.add_trace(
+                go.Scatter(
+                    x=epochs,
+                    y=scores,
+                    mode="lines+markers",
+                    name=f"{category_names[category]} (折 {fold})",
+                    legendgroup=f"{category}_{fold}",
+                    marker=dict(size=6),
+                    line=dict(color=fold_colors[fold], dash=dash_styles[category]),
+                    text=hover_text,
+                    hoverinfo="text",
+                ),
+                row=1,
+                col=1,
+            )
+
+            # 如果有损失数据，添加损失曲线
+            if losses:
+                fig.add_trace(
+                    go.Scatter(
+                        x=epochs,
+                        y=losses,
+                        mode="lines+markers",
+                        name=f"{category_names[category]} (折 {fold})",
+                        legendgroup=f"{category}_{fold}",
+                        marker=dict(size=6),
+                        line=dict(color=fold_colors[fold], dash=dash_styles[category]),
+                        text=hover_text,
+                        hoverinfo="text",
+                        showlegend=False,  # 不在图例中显示，已在分数图中显示
+                    ),
+                    row=2,
+                    col=1,
+                )
+
+        # 设置图表布局
+        fig.update_layout(
+            height=800,
+            width=900,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            hovermode="closest",
+        )
+
+        # 设置x轴和y轴标签
+        fig.update_xaxes(title_text="训练轮次", row=2, col=1)
+        fig.update_yaxes(title_text=f"{metric_type}评估分数", row=1, col=1)
+        fig.update_yaxes(title_text="损失值", row=2, col=1)
+
+        # 保存为HTML文件
+        html_path = os.path.join(
+            training_curves_dir, f"interactive_training_curves_{metric_type}.html"
+        )
+        fig.write_html(html_path)
+
+        return html_path
+
     def plot_model_categories_comparison(self, score_type="MAP"):
         """
         绘制不同类别模型的对比散点图(MLP, GAT自环, GAT真实边)
@@ -865,6 +1014,61 @@ class AdaptiveGATEvaluator:
         )
         plt.close()
 
+    def create_hover_text(self, row, include_params=True):
+        """
+        为交互式图表创建悬停文本
+
+        参数:
+            row: DataFrame中的一行，包含模型信息
+            include_params: 是否包含模型参数，默认为True
+
+        返回:
+            str: 格式化的HTML悬停文本
+        """
+        # 模型类别名称映射
+        category_names = {
+            "baseline_mlp": "MLP模型",
+            "gat_selfloop": "GAT自环模型",
+            "gat_realedge": "GAT真实边模型",
+            "baseline_weights": "权重法",
+        }
+
+        # 收集模型的基本信息
+        params = [f"<b>{row['model_id']}</b>"]
+        params.append(
+            f"类别: {category_names.get(row['model_category'], row['model_category'])}"
+        )
+        params.append(f"折: {row['fold_num']}")
+
+        # 添加评分信息
+        for score_type in ["MAP", "MRR"]:
+            train_score_col = f"train_{score_type}_score"
+            test_score_col = f"predict_{score_type}_score"
+            params.append(f"训练{score_type}: {row[train_score_col]:.4f}")
+            params.append(f"测试{score_type}: {row[test_score_col]:.4f}")
+
+        # 添加拟合状态
+        for score_type in ["MAP", "MRR"]:
+            fitting_status_col = f"fitting_status_{score_type}"
+            if fitting_status_col in row and not pd.isna(row[fitting_status_col]):
+                params.append(f"{score_type}拟合状态: {row[fitting_status_col]}")
+
+        # 添加训练信息
+        if row['model_category'] != "baseline_weights":
+            params.append(f"停止原因: {row['stop_reason']}")
+            params.append(f"最佳轮次: {row['best_epoch']}")
+            params.append(f"总轮次: {row['final_epoch']}")
+
+        # 添加模型参数
+        if include_params:
+            model_params = ModelParameters.get_all_params()
+            params.append("<b>模型参数:</b>")
+            for param in model_params:
+                if param in row and not pd.isna(row[param]):
+                    params.append(f"{param}: {row[param]}")
+
+        return "<br>".join(params)
+
     def plot_interactive_model_comparison(self, score_type="MAP"):
         """
         创建交互式散点图，鼠标悬停时显示模型详细信息
@@ -905,41 +1109,6 @@ class AdaptiveGATEvaluator:
         # 创建图表
         fig = go.Figure()
 
-        # 生成自定义悬停信息
-        def create_hover_text(row):
-            # 收集模型的所有参数和结果
-            params = [f"<b>{row['model_id']}</b>"]
-            params.append(
-                f"类别: {category_names.get(row['model_category'], row['model_category'])}"
-            )
-
-            # 添加基本信息
-            params.append(f"折: {row['fold_num']}")
-            params.append(f"训练{score_type}: {row[train_score_col]:.4f}")
-            params.append(f"测试{score_type}: {row[test_score_col]:.4f}")
-
-            # 添加拟合状态
-            if fitting_status_col in row and not pd.isna(row[fitting_status_col]):
-                params.append(f"拟合状态: {row[fitting_status_col]}")
-
-            # 添加训练信息
-            if "training_stop_reason" in row:
-                params.append(f"停止原因: {row['training_stop_reason']}")
-            if "training_best_epoch" in row:
-                params.append(f"最佳轮次: {row['training_best_epoch']}")
-            if "training_final_epoch" in row:
-                params.append(f"总轮次: {row['training_final_epoch']}")
-
-            # 添加模型参数
-            model_params = ModelParameters.get_all_params()
-
-            params.append("<b>模型参数:</b>")
-            for param in model_params:
-                if param in row and not pd.isna(row[param]):
-                    params.append(f"{param}: {row[param]}")
-
-            return "<br>".join(params)
-
         # 添加所有模型点
         for fold in folds:
             fold_models = all_models[all_models["fold_num"] == fold]
@@ -951,7 +1120,7 @@ class AdaptiveGATEvaluator:
                 if not category_models.empty:
                     # 生成hover文本
                     hover_texts = category_models.apply(
-                        create_hover_text, axis=1
+                        self.create_hover_text, axis=1
                     ).tolist()
 
                     # 添加散点
@@ -986,10 +1155,6 @@ class AdaptiveGATEvaluator:
                             ]
 
                             if not status_models.empty:
-                                status_hover_texts = status_models.apply(
-                                    create_hover_text, axis=1
-                                ).tolist()
-
                                 # 添加边框散点
                                 fig.add_trace(
                                     go.Scatter(
@@ -1007,7 +1172,6 @@ class AdaptiveGATEvaluator:
                                             line=dict(width=2, color=edge_color),
                                         ),
                                         name=f"{fitting_status} (折 {fold})",
-                                        text=status_hover_texts,
                                         hoverinfo="text",
                                         showlegend=(
                                             fold == folds[0]
@@ -1240,7 +1404,8 @@ class AdaptiveGATEvaluator:
         # 生成最终报告
         self.generate_final_report()
 
-        # 在所有分析完成后绘制综合性的模型对比图
+        # 绘制图像
+        self.plot_interactive_training_curves()
         for score_type in ["MAP", "MRR"]:
             self.plot_model_categories_comparison(score_type)
             self.plot_interactive_model_comparison(score_type)
@@ -1257,12 +1422,12 @@ def main():
         "--output", "-o", help="输出目录 (默认为log_dir/analysis_results)"
     )
 
-    args = parser.parse_args()
+    # args = parser.parse_args()
 
-    # args = argparse.Namespace(
-    #     log_dir="aspectj_GAT_MRR",
-    #     output=None,
-    # )
+    args = argparse.Namespace(
+        log_dir="aspectj_GAT_MAP_20250424124332/",
+        output=None,
+    )
 
     # 创建评估器并运行分析
     evaluator = AdaptiveGATEvaluator(args.log_dir)
