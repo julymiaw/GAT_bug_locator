@@ -722,16 +722,21 @@ class AdaptiveGATEvaluator:
             scores = summary["all_scores"]
             losses = summary.get("all_losses", [])
 
+            # 使用create_hover_text函数获取详细的模型参数文本
+            base_hover_text = self.create_hover_text(
+                model_row, include_params=True, include_scores=False
+            )
+
             # 生成悬停文本
             hover_text = []
             for i, (epoch, score) in enumerate(zip(epochs, scores)):
-                loss_text = f"损失: {losses[i]:.6f}" if i < len(losses) else ""
-                model_text = f"模型: {model_id}<br>类别: {category_names[category]}<br>折: {fold}"
-                epoch_text = f"轮次: {epoch}<br>{metric_type}分数: {score:.6f}"
-                if loss_text:
-                    hover_text.append(f"{model_text}<br>{epoch_text}<br>{loss_text}")
-                else:
-                    hover_text.append(f"{model_text}<br>{epoch_text}")
+                # 添加轮次特定信息
+                epoch_info = f"<b>轮次: {epoch}</b><br>{metric_type}分数: {score:.6f}"
+                if i < len(losses):
+                    epoch_info += f"<br>损失: {losses[i]:.6f}"
+
+                # 结合基础模型信息和轮次特定信息
+                hover_text.append(f"{base_hover_text}<br><br>{epoch_info}")
 
             # 创建图例标签 - 为最佳模型添加特殊标注
             label = f"{category_names[category]}-{model_id.split('_')[-1]}"
@@ -925,11 +930,64 @@ class AdaptiveGATEvaluator:
         fig.update_yaxes(title_text=f"{metric_type}评估分数", row=1, col=1)
         fig.update_yaxes(title_text="损失值", row=2, col=1)
 
+        # 添加特殊配置实现点击图例不消失但变为灰色的功能
+        fig_config = {
+            "displayModeBar": True,
+            "toImageButtonOptions": {
+                "format": "png",
+                "filename": f"training_curves_{metric_type}",
+                "height": 900,
+                "width": 1200,
+                "scale": 2,
+            },
+            # 启用交互式图例 - 点击图例项可显示/隐藏对应曲线而不是完全消失
+            "displaylogo": False,
+            # 添加一个特殊设置，使图例项在隐藏时仍然显示但为灰色
+            "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+        }
+
         # 保存为HTML文件
         html_path = os.path.join(
             training_curves_dir, f"interactive_training_curves_{metric_type}.html"
         )
-        fig.write_html(html_path)
+        fig.write_html(
+            html_path,
+            config=fig_config,
+            include_plotlyjs="cdn",  # 使用CDN加载plotly.js以减小文件大小
+            include_mathjax="cdn",
+            post_script="""
+            var gd = document.getElementById('plotly-html-element');
+
+            // 图例双击事件处理
+            gd.on('plotly_legenddoubleclick', function(data) {
+                var traces = [];
+                var update = {visible: []};
+
+                // 获取当前所有trace的可见性状态
+                for(var i = 0; i < gd.data.length; i++) {
+                    traces.push(i);
+                    if(i === data.curveNumber) {
+                        // 保持当前点击的trace可见
+                        update.visible.push(true);
+                    } else {
+                        // 其他trace隐藏
+                        update.visible.push(false);
+                    }
+                }
+
+                // 更新可见性
+                Plotly.restyle(gd, update, traces);
+
+                // 重置按钮状态 - 设置为"全部"按钮
+                Plotly.relayout(gd, {
+                    'updatemenus[0].active': -1,
+                    'updatemenus[1].active': -1
+                });
+
+                return false;
+            });
+            """,
+        )
 
         return html_path
 
@@ -1170,13 +1228,14 @@ class AdaptiveGATEvaluator:
         )
         plt.close()
 
-    def create_hover_text(self, row, include_params=True):
+    def create_hover_text(self, row, include_params=True, include_scores=True):
         """
         为交互式图表创建悬停文本
 
         参数:
             row: DataFrame中的一行，包含模型信息
             include_params: 是否包含模型参数，默认为True
+            include_scores: 是否包含分数信息，默认为True
 
         返回:
             str: 格式化的HTML悬停文本
@@ -1197,17 +1256,18 @@ class AdaptiveGATEvaluator:
         params.append(f"折: {row['fold_num']}")
 
         # 添加评分信息
-        for score_type in ["MAP", "MRR"]:
-            train_score_col = f"train_{score_type}_score"
-            test_score_col = f"predict_{score_type}_score"
-            params.append(f"训练{score_type}: {row[train_score_col]:.4f}")
-            params.append(f"测试{score_type}: {row[test_score_col]:.4f}")
+        if include_scores:
+            for score_type in ["MAP", "MRR"]:
+                train_score_col = f"train_{score_type}_score"
+                test_score_col = f"predict_{score_type}_score"
+                params.append(f"训练{score_type}: {row[train_score_col]:.4f}")
+                params.append(f"测试{score_type}: {row[test_score_col]:.4f}")
 
-        # 添加拟合状态
-        for score_type in ["MAP", "MRR"]:
-            fitting_status_col = f"fitting_status_{score_type}"
-            if fitting_status_col in row and not pd.isna(row[fitting_status_col]):
-                params.append(f"{score_type}拟合状态: {row[fitting_status_col]}")
+            # 添加拟合状态
+            for score_type in ["MAP", "MRR"]:
+                fitting_status_col = f"fitting_status_{score_type}"
+                if fitting_status_col in row and not pd.isna(row[fitting_status_col]):
+                    params.append(f"{score_type}拟合状态: {row[fitting_status_col]}")
 
         # 添加训练信息
         if row["model_category"] != "baseline_weights":
