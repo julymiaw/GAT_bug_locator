@@ -661,9 +661,9 @@ class AdaptiveGATEvaluator:
 
         # 模型类别名称映射
         category_names = {
-            "baseline_mlp": "MLP模型",
-            "gat_selfloop": "GAT自环模型",
-            "gat_realedge": "GAT真实边模型",
+            "baseline_mlp": "MLP",
+            "gat_selfloop": "GAT自环",
+            "gat_realedge": "GAT真实边",
         }
 
         # 为每个fold分配不同颜色
@@ -680,6 +680,16 @@ class AdaptiveGATEvaluator:
             "gat_realedge": "dashdot",  # 点划线
         }
 
+        # 获取每个fold的最佳模型
+        best_models = {}
+        for fold in folds:
+            fold_best = nn_models[
+                (nn_models["fold_num"] == fold)
+                & (nn_models[f"is_best_{metric_type}"] == True)
+            ]
+            if not fold_best.empty:
+                best_models[fold] = fold_best.iloc[0]["model_id"]
+
         # 创建图表
         fig = make_subplots(
             rows=2,
@@ -692,6 +702,7 @@ class AdaptiveGATEvaluator:
             vertical_spacing=0.1,
         )
 
+        # 为每个模型绘制曲线
         for _, model_row in nn_models.iterrows():
             model_id = model_row["model_id"]
             fold = model_row["fold_num"]
@@ -715,14 +726,17 @@ class AdaptiveGATEvaluator:
             hover_text = []
             for i, (epoch, score) in enumerate(zip(epochs, scores)):
                 loss_text = f"损失: {losses[i]:.6f}" if i < len(losses) else ""
-                model_text = (
-                    f"模型: {model_id}<br>类别: {category_names[category]}<br>折: {fold}"
-                )
+                model_text = f"模型: {model_id}<br>类别: {category_names[category]}<br>折: {fold}"
                 epoch_text = f"轮次: {epoch}<br>{metric_type}分数: {score:.6f}"
                 if loss_text:
                     hover_text.append(f"{model_text}<br>{epoch_text}<br>{loss_text}")
                 else:
                     hover_text.append(f"{model_text}<br>{epoch_text}")
+
+            # 创建图例标签 - 为最佳模型添加特殊标注
+            label = f"{category_names[category]}-{model_id.split('_')[-1]}"
+            if fold in best_models and best_models[fold] == model_id:
+                label += " (最佳)"
 
             # 添加分数曲线
             fig.add_trace(
@@ -730,12 +744,17 @@ class AdaptiveGATEvaluator:
                     x=epochs,
                     y=scores,
                     mode="lines+markers",
-                    name=f"{category_names[category]} (折 {fold})",
-                    legendgroup=f"{category}_{fold}",
-                    marker=dict(size=6),
-                    line=dict(color=fold_colors[fold], dash=dash_styles[category]),
+                    name=label,
+                    legendgroup=model_id,
+                    marker=dict(size=4),  # 减小点的大小
+                    line=dict(
+                        color=fold_colors[fold],
+                        dash=dash_styles[category],
+                        width=1.5,  # 减小线的粗细
+                    ),
                     text=hover_text,
                     hoverinfo="text",
+                    customdata=[category, fold],
                 ),
                 row=1,
                 col=1,
@@ -748,13 +767,18 @@ class AdaptiveGATEvaluator:
                         x=epochs,
                         y=losses,
                         mode="lines+markers",
-                        name=f"{category_names[category]} (折 {fold})",
-                        legendgroup=f"{category}_{fold}",
-                        marker=dict(size=6),
-                        line=dict(color=fold_colors[fold], dash=dash_styles[category]),
+                        name=label,
+                        legendgroup=model_id,
+                        marker=dict(size=4),  # 减小点的大小
+                        line=dict(
+                            color=fold_colors[fold],
+                            dash=dash_styles[category],
+                            width=1.5,  # 减小线的粗细
+                        ),
                         text=hover_text,
                         hoverinfo="text",
                         showlegend=False,  # 不在图例中显示，已在分数图中显示
+                        customdata=[category, fold],
                     ),
                     row=2,
                     col=1,
@@ -763,9 +787,135 @@ class AdaptiveGATEvaluator:
         # 设置图表布局
         fig.update_layout(
             height=800,
-            width=900,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            width=1000,
+            legend=dict(
+                orientation="v",
+                yanchor="top",
+                y=0.9,  # 移动到按钮下方
+                xanchor="left",
+                x=0.01,  # 移动到左侧
+                font=dict(size=10),  # 减小图例字体大小
+            ),
             hovermode="closest",
+            legend_title_text="模型标识",
+        )
+
+        # 创建模型类型按钮
+        category_buttons = []
+        for category, category_name in category_names.items():
+            category_buttons.append(
+                dict(
+                    method="update",
+                    label=category_name,
+                    args=[
+                        {
+                            "visible": [
+                                (
+                                    trace.customdata[0] == category
+                                    if hasattr(trace, "customdata")
+                                    else True
+                                )
+                                for trace in fig.data
+                            ]
+                        },
+                        {"title": f"{category_name}模型的训练曲线"},
+                    ],
+                )
+            )
+
+        # 添加"显示全部模型类型"按钮
+        category_buttons.append(
+            dict(
+                method="update",
+                label="全部模型类型",
+                args=[
+                    {"visible": [True] * len(fig.data)},
+                    {"title": "所有模型的训练曲线"},
+                ],
+            )
+        )
+
+        # 创建折按钮
+        fold_buttons = []
+        for fold in folds:
+            fold_buttons.append(
+                dict(
+                    method="update",
+                    label=f"折 {fold}",
+                    args=[
+                        {
+                            "visible": [
+                                (
+                                    trace.customdata[1] == fold
+                                    if hasattr(trace, "customdata")
+                                    else True
+                                )
+                                for trace in fig.data
+                            ]
+                        },
+                        {"title": f"折 {fold} 的训练曲线"},
+                    ],
+                )
+            )
+
+        # 添加"显示全部折"按钮
+        fold_buttons.append(
+            dict(
+                method="update",
+                label="全部折",
+                args=[
+                    {"visible": [True] * len(fig.data)},
+                    {"title": "所有折的训练曲线"},
+                ],
+            )
+        )
+
+        fig.update_layout(
+            updatemenus=[
+                # 第一行：模型类型按钮
+                dict(
+                    type="buttons",
+                    direction="right",
+                    active=-1,  # 默认不选任何按钮
+                    x=0.1,
+                    y=1.15,
+                    buttons=category_buttons,
+                    name="categoryMenu",
+                    showactive=True,
+                ),
+                # 第二行：折按钮
+                dict(
+                    type="buttons",
+                    direction="right",
+                    active=-1,  # 默认不选任何按钮
+                    x=0.1,
+                    y=1.05,
+                    buttons=fold_buttons,
+                    name="foldMenu",
+                    showactive=True,
+                ),
+            ]
+        )
+
+        # 添加个性化注解
+        fig.add_annotation(
+            x=0.01,
+            y=1.15,
+            xref="paper",
+            yref="paper",
+            text="模型类型:",
+            showarrow=False,
+            font=dict(size=12),
+        )
+
+        fig.add_annotation(
+            x=0.01,
+            y=1.05,
+            xref="paper",
+            yref="paper",
+            text="折:",
+            showarrow=False,
+            font=dict(size=12),
         )
 
         # 设置x轴和y轴标签
@@ -1058,7 +1208,7 @@ class AdaptiveGATEvaluator:
                 params.append(f"{score_type}拟合状态: {row[fitting_status_col]}")
 
         # 添加训练信息
-        if row['model_category'] != "baseline_weights":
+        if row["model_category"] != "baseline_weights":
             params.append(f"停止原因: {row['stop_reason']}")
             params.append(f"最佳轮次: {row['best_epoch']}")
             params.append(f"总轮次: {row['final_epoch']}")
