@@ -15,36 +15,36 @@ from metrics import evaluate_fold
 class ModelParameters:
     """GATRegressor 参数的中央定义类"""
 
-    # 默认参数值
-    DEFAULTS = {
+    # 只保留参数名称（键）
+    KEYS = [
         # 模型结构参数
-        "hidden_dim": 16,
-        "heads": None,
-        "dropout": 0.3,
-        "use_self_loops_only": False,
+        "hidden_dim",
+        "heads",
+        "dropout",
+        "use_self_loops_only",
         # 优化器参数
-        "alpha": 0.0001,
-        "lr": 0.005,
-        "penalty": "l2",
+        "alpha",
+        "lr",
+        "penalty",
         # 损失函数参数
-        "loss": "MSE",
-        "epsilon": 0.1,
+        "loss",
+        "epsilon",
         # 训练控制参数
-        "max_iter": 500,
-        "tol": 1e-4,
-        "n_iter_no_change": 5,
-        "shuffle": True,
-        "warm_start": False,
-        "random_state": 42,
-        "min_score_ratio": 0.8,
+        "max_iter",
+        "tol",
+        "n_iter_no_change",
+        "shuffle",
+        "warm_start",
+        "random_state",
+        "min_score_ratio",
         # 评估参数
-        "metric_type": "MRR",
-    }
+        "metric_type",
+    ]
 
     @classmethod
     def get_all_params(cls):
         """获取所有参数名称"""
-        return list(cls.DEFAULTS.keys())
+        return cls.KEYS
 
 
 class GATModule(nn.Module):
@@ -197,7 +197,7 @@ class GATRegressor:
         hidden_dim=16,
         heads=None,
         dropout=0.3,
-        alpha=1e-4,
+        alpha=1e-3,
         loss="WeightedMSE",
         penalty="l2",
         max_iter=500,
@@ -205,7 +205,7 @@ class GATRegressor:
         shuffle=True,
         epsilon=0.1,
         random_state=42,
-        lr=1e-3,
+        lr=5e-3,
         warm_start=False,
         n_iter_no_change=5,
         use_self_loops_only=False,
@@ -545,7 +545,10 @@ class GATRegressor:
     def clone(self):
         """创建当前回归器的深拷贝，保留所有参数但重置状态"""
         # 提取当前实例的所有标准参数
-        params = {}
+        params = {
+            "node_feature_columns": self.node_feature_columns,
+            "dependency_feature_columns": self.dependency_feature_columns,
+        }
         for param_name in ModelParameters.get_all_params():
             if hasattr(self, param_name):
                 params[param_name] = getattr(self, param_name)

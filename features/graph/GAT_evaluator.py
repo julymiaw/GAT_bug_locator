@@ -1642,12 +1642,12 @@ def main():
         "--output", "-o", help="输出目录 (默认为log_dir/analysis_results)"
     )
 
-    # args = parser.parse_args()
+    args = parser.parse_args()
 
-    args = argparse.Namespace(
-        log_dir="aspectj_GAT_MAP_20250424124332/",
-        output=None,
-    )
+    # args = argparse.Namespace(
+    #     log_dir="aspectj_GAT_MAP_20250424124332/",
+    #     output=None,
+    # )
 
     # 创建评估器并运行分析
     evaluator = AdaptiveGATEvaluator(args.log_dir)

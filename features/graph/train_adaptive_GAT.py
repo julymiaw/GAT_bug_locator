@@ -495,34 +495,11 @@ def get_skmodels(metric_type="MRR"):
         GATRegressor模型列表
     """
     # 数据集大小不同，最优的超参数可能不同
-    penalty = ["l2"]
-    dropout_rates = [0.2, 0.4]  # 小型数据集 0.1-0.3，大型数据集 0.3-0.5
+    dropout_rates = [0.2]  # 小型数据集 0.1-0.3，大型数据集 0.3-0.5
     use_self_loops_modes = [False, True]
 
-    training_strategies = [
-        # 高比例配低耐心 - 快速达到高性能或放弃
-        (0.8, 2),  # 要求高(80%)，但耐心低(2轮)
-        # 中等配置 - 平衡点
-        (0.7, 3),  # 适中要求(70%)，适中耐心(3轮)
-        # 低比例配高耐心 - 允许缓慢但稳定的提升
-        (0.6, 5),  # 要求低(60%)，但耐心高(5轮)
-    ]
-
-    # 精简的结构配置 - 聚焦在最有希望的模型上
-    head_dim_configs = [
-        # 保留少量MLP基准
-        (None, 16),  # 轻量级MLP
-        # 聚焦单头和双头配置 - 这是过去表现最好的
-        (1, 16),  # 单头16维 - 参数少，表达能力适中
-        (2, 16),  # 双头16维 - 平衡参数量和表达能力
-        (3, 16),  # 三头16维 - 较强的表达能力但参数较多
-    ]
-
-    # 使用中等L2正则化
-    alpha_values = [1e-4, 1e-3]
-
-    # 学习率仅保留常用值
-    lr_values = [0.001, 0.005]
+    training_strategies = [(1.0, 1), (0.9, 3), (0.8, 5)]
+    head_dim_configs = [(None, 64), (1, 32), (2, 32), (1, 64)]
 
     models = [
         GATRegressor(
@@ -531,25 +508,19 @@ def get_skmodels(metric_type="MRR"):
             hidden_dim=hd,
             heads=h,
             use_self_loops_only=loop,
-            penalty=p,
             dropout=dr,
             n_iter_no_change=nic,
             min_score_ratio=msr,
             metric_type=metric_type,
-            alpha=a,
-            lr=lr,
         )
-        for (h, hd), p, dr, loop, (msr, nic), a, lr in product(
+        for (h, hd), dr, loop, (msr, nic) in product(
             head_dim_configs,
-            penalty,
             dropout_rates,
             use_self_loops_modes,
             training_strategies,
-            alpha_values,
-            lr_values,
         )
         if not (h is None and loop is True)  # MLP模式下不使用自环
-        and not (p is None and a != alpha_values[0])  # 无正则化时仅使用一个alpha值
+        # and not (p is None and a != alpha_values[0])  # 无正则化时仅使用一个alpha值
     ]
 
     # 输出模型数量信息
