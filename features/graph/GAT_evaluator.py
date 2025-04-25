@@ -786,15 +786,17 @@ class AdaptiveGATEvaluator:
 
         # 设置图表布局
         fig.update_layout(
-            height=800,
-            width=1000,
+            height=800,  # 增加高度
+            width=1200,
+            margin=dict(t=150, l=50, r=50, b=50),  # 增加顶部边距，为按钮腾出空间
             legend=dict(
-                orientation="v",
-                yanchor="top",
-                y=0.9,  # 移动到按钮下方
-                xanchor="left",
-                x=0.01,  # 移动到左侧
-                font=dict(size=10),  # 减小图例字体大小
+                orientation="h",  # 水平图例
+                yanchor="bottom",
+                y=-0.5,  # 放在图表下方
+                xanchor="center",
+                x=0.5,  # 居中
+                font=dict(size=10),
+                itemsizing="constant",  # 保持图例条目大小一致
             ),
             hovermode="closest",
             legend_title_text="模型标识",
@@ -877,8 +879,8 @@ class AdaptiveGATEvaluator:
                     type="buttons",
                     direction="right",
                     active=-1,  # 默认不选任何按钮
-                    x=0.1,
-                    y=1.15,
+                    x=0.8,
+                    y=1.3,
                     buttons=category_buttons,
                     name="categoryMenu",
                     showactive=True,
@@ -888,8 +890,8 @@ class AdaptiveGATEvaluator:
                     type="buttons",
                     direction="right",
                     active=-1,  # 默认不选任何按钮
-                    x=0.1,
-                    y=1.05,
+                    x=0.8,
+                    y=1.2,
                     buttons=fold_buttons,
                     name="foldMenu",
                     showactive=True,
@@ -899,8 +901,8 @@ class AdaptiveGATEvaluator:
 
         # 添加个性化注解
         fig.add_annotation(
-            x=0.01,
-            y=1.15,
+            x=0.2,  # 调整位置，更靠近按钮
+            y=1.3,
             xref="paper",
             yref="paper",
             text="模型类型:",
@@ -909,8 +911,8 @@ class AdaptiveGATEvaluator:
         )
 
         fig.add_annotation(
-            x=0.01,
-            y=1.05,
+            x=0.2,  # 调整位置，更靠近按钮
+            y=1.2,
             xref="paper",
             yref="paper",
             text="折:",
