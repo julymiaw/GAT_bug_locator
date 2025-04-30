@@ -8,7 +8,6 @@ Requires results of save_normalized_fold_dataframes.py
 
 import json
 import os
-import time
 import argparse
 from collections import defaultdict
 from itertools import product
@@ -95,14 +94,8 @@ class Adaptive_Process(object):
         self.cross_validation_fold_number = 5  # 交叉验证折数
         # endregion
 
-        # region 性能日志
-        self.training_time_stats = (
-            {}
-        )  # {折号: {"time": 时间, "bugs": 缺陷数, "files": 文件数}}
-        self.prescoring_log = {}  # {fold_num: {方法名: 评估得分}}
-        self.best_prescoring_log = {}  # {fold_num: 最佳权重方法名}
-        self.regression_log = {}  # 回归模型评估：{折号: {模型名: 评估得分}}
-        self.best_regression_log = {}  # {fold_num: 最佳模型名}
+        # region 日志
+        self.training_time_stats = {}
         # endregion
 
         # region 配置映射表（内部使用）
@@ -128,8 +121,6 @@ class Adaptive_Process(object):
 
         结果存储：
             self.weights更新为最佳方法的平均权重向量
-            self.prescoring_log记录所有方法评估结果
-            self.best_prescoring_log记录最佳方法信息
         """
         if self.use_prescoring_cross_validation:
             # 使用 k 折交叉验证计算权重
@@ -208,12 +199,7 @@ class Adaptive_Process(object):
         w_method: str = None
         w_weights: np.ndarray = None
 
-        if fold_num not in self.prescoring_log:
-            self.prescoring_log[fold_num] = {}
-
         for k, v in self.weights.items():
-            # 存储每种方法的评估结果
-            self.prescoring_log[fold_num][k] = v[1]
             # 记录最佳方法
             if v[1] > w_maks:
                 w_maks = v[1]
@@ -224,7 +210,6 @@ class Adaptive_Process(object):
         self.weights_score = w_maks
         eprint(f"Best weights method: {w_method} MAP: {w_maks}")
 
-        self.best_prescoring_log[fold_num] = w_method
         eprint("===============")
 
         eprint("=============== Size and regression model select")
@@ -244,7 +229,6 @@ class Adaptive_Process(object):
         )
 
         self.reg_model_score = 0
-        self.regression_log[fold_num] = {}
 
         for res in results:
             current_name = res[0]
@@ -258,7 +242,6 @@ class Adaptive_Process(object):
                 + "_"
                 + current_cut_function
             )
-            self.regression_log[fold_num][name] = current_score
             if current_score > self.reg_model_score:
                 self.reg_model_name = current_name
                 self.cut_method_name = current_cut_function
@@ -270,7 +253,6 @@ class Adaptive_Process(object):
         self.score_method = self.score_methods_map[self.score_method_name]
 
         name = self.prepare_regressor_name(self.reg_model) + "_" + self.cut_method_name
-        self.best_regression_log[fold_num] = name
 
         eprint(f"Best regression model: {name} MAP: {self.reg_model_score}")
         eprint("===============")
@@ -788,9 +770,7 @@ def main():
         fold_testing,
         fold_training,
     )
-
-    results_timestamp = time.strftime("%Y%m%d%H%M%S")
-    result_dir = f"{file_prefix}_SGD_{results_timestamp}"
+    result_dir = f"{file_prefix}_SGD"
     os.makedirs(result_dir, exist_ok=True)
 
     # 保存训练时间统计
@@ -798,30 +778,6 @@ def main():
         os.path.join(result_dir, f"{ptemplate.name}_training_time.json"), "w"
     ) as time_file:
         json.dump(ptemplate.training_time_stats, time_file, indent=4)
-
-    # 保存权重方法评估日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_prescoring_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.prescoring_log, file, indent=4)
-
-    # 保存回归模型评估日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_regression_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.regression_log, file, indent=4)
-
-    # 保存最佳权重方法日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_best_prescoring_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.best_prescoring_log, file, indent=4)
-
-    # 保存最佳模型日志
-    with open(
-        os.path.join(result_dir, f"{ptemplate.name}_best_regression_log.json"), "w"
-    ) as file:
-        json.dump(ptemplate.best_regression_log, file, indent=4)
 
     # 保存模型训练结果指标
     with open(

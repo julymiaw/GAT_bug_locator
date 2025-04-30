@@ -101,4 +101,4 @@ python getRootPath.py source/tomcat_dataset --priority win32 mozilla common_j2se
 
 ![tomcat_dataset](dataset/tomcat_dataset/dependency_distribution.png)
 
-虽然我们设计了 13 种依赖类型，但是，我们发现这 6 个数据集中都没有出现 “泛型约束依赖”，也就是说，没有出现形如 `A<T extends B>` 的依赖关系。
+虽然我们设计了 13 种依赖类型，但是，我们发现这 6 个数据集中都没有出现 “泛型约束依赖”，也就是说，没有出现形如 `A<T extends B>` 的依赖关系。此外，SWT数据集没有出现“泛型参数依赖”，可能是因为其使用的Java版本还未引入泛型。

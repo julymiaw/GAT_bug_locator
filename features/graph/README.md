@@ -377,26 +377,26 @@ python evaluator.py {log_dir}
     | Accuracy@10 | 0.7064 |     | Accuracy@20 | 0.7523 |
     | MAP         | 0.5275 |     | MRR         | 0.5232 |
 
-2. 改进的GAT模型(图注意力网络)结果
+2. GAT模型结果
 
     | 属性        | 分数   |     | 属性        | 分数   |
     | ----------- | ------ | --- | ----------- | ------ |
-    | Accuracy@1  | 0.4550 |     | Accuracy@11 | 0.7284 |
-    | Accuracy@2  | 0.5505 |     | Accuracy@12 | 0.7321 |
-    | Accuracy@3  | 0.5872 |     | Accuracy@13 | 0.7376 |
-    | Accuracy@4  | 0.6220 |     | Accuracy@14 | 0.7431 |
-    | Accuracy@5  | 0.6550 |     | Accuracy@15 | 0.7505 |
-    | Accuracy@6  | 0.6716 |     | Accuracy@16 | 0.7541 |
-    | Accuracy@7  | 0.6899 |     | Accuracy@17 | 0.7560 |
-    | Accuracy@8  | 0.7009 |     | Accuracy@18 | 0.7596 |
-    | Accuracy@9  | 0.7064 |     | Accuracy@19 | 0.7615 |
-    | Accuracy@10 | 0.7174 |     | Accuracy@20 | 0.7615 |
-    | MAP         | 0.5482 |     | MRR         | 0.5445 |
+    | Accuracy@1  | 0.4440 |     | Accuracy@11 | 0.7119 |
+    | Accuracy@2  | 0.5284 |     | Accuracy@12 | 0.7248 |
+    | Accuracy@3  | 0.5908 |     | Accuracy@13 | 0.7284 |
+    | Accuracy@4  | 0.6183 |     | Accuracy@14 | 0.7339 |
+    | Accuracy@5  | 0.6440 |     | Accuracy@15 | 0.7376 |
+    | Accuracy@6  | 0.6624 |     | Accuracy@16 | 0.7394 |
+    | Accuracy@7  | 0.6734 |     | Accuracy@17 | 0.7450 |
+    | Accuracy@8  | 0.6844 |     | Accuracy@18 | 0.7486 |
+    | Accuracy@9  | 0.6917 |     | Accuracy@19 | 0.7486 |
+    | Accuracy@10 | 0.7009 |     | Accuracy@20 | 0.7541 |
+    | MAP         | 0.5411 |     | MRR         | 0.5333 |
 
 3. 模型性能对比分析
 
-    | 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
-    | ------------- | ------ | ------ | ---------- | ---------- | ----------- | ----------- |
-    | SGDRegressor  | 0.5275 | 0.5232 | 0.4294     | 0.6294     | 0.7064      | 0.7523      |
-    | 改进的GAT模型 | 0.5482 | 0.5445 | 0.4550     | 0.6550     | 0.7174      | 0.7615      |
-    | 提升百分比    | 3.92%  | 4.07%  | 5.96%      | 4.07%      | 1.56%       | 1.22%       |
+    | 模型         | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+    | :----------- | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+    | SGDRegressor | 0.5275 | 0.5232 | 0.4294     | 0.6294     | 0.7064      | 0.7523      |
+    | GAT模型      | 0.5411 | 0.5333 | 0.4440     | 0.6440     | 0.7009      | 0.7541      |
+    | 提升百分比   | 2.6%   | 1.9%   | 3.4%       | 2.3%       | -0.8%       | 0.2%        |

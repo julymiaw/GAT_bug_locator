@@ -495,11 +495,27 @@ def get_skmodels(metric_type="MRR"):
         GATRegressor模型列表
     """
     # 数据集大小不同，最优的超参数可能不同
-    dropout_rates = [0.2]  # 小型数据集 0.1-0.3，大型数据集 0.3-0.5
+
+    # Aspectj数据集
+    # dropout_rates = [0.2]  # 小型数据集 0.1-0.3，大型数据集 0.3-0.5
+    # use_self_loops_modes = [False, True]
+
+    # training_strategies = [(0.8, 5), (0.9, 3)]
+    # head_dim_configs = [(1, 32), (2, 32), (1, 64), (None, 64)]
+
+    # Tomcat数据集
+    dropout_rates = [0.4]  # 小型数据集 0.1-0.3，大型数据集 0.3-0.5
     use_self_loops_modes = [False, True]
 
-    training_strategies = [(1.0, 1), (0.9, 3), (0.8, 5)]
-    head_dim_configs = [(None, 64), (1, 32), (2, 32), (1, 64)]
+    training_strategies = [(0.5, 3), (0.7, 3), (0.8, 5)]
+    head_dim_configs = [(1, 32), (1, 64), (None, 64)]
+
+    # SWT数据集
+    # dropout_rates = [0.1, 0.2]
+    # use_self_loops_modes = [False, True]
+
+    # training_strategies = [(0.95, 3), (0.9, 5), (0.85, 7)]
+    # head_dim_configs = [(2, 64), (2, 128), (3, 64), (4, 64), (None, 128)]
 
     models = [
         GATRegressor(

@@ -1394,8 +1394,11 @@ class AdaptiveGATEvaluator:
                                         name=f"{fitting_status} (折 {fold})",
                                         hoverinfo="text",
                                         showlegend=(
-                                            fold == folds[0]
-                                            and category == next(iter(category_names))
+                                            bool(
+                                                fold == folds[0]
+                                                and category
+                                                == next(iter(category_names))
+                                            )
                                         ),  # 只为第一个fold和第一个类别显示图例
                                     )
                                 )
@@ -1645,7 +1648,7 @@ def main():
     args = parser.parse_args()
 
     # args = argparse.Namespace(
-    #     log_dir="aspectj_GAT_MAP_20250424124332/",
+    #     log_dir="tomcat_GAT_MAP",
     #     output=None,
     # )
 
