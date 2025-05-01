@@ -633,6 +633,63 @@ class AdaptiveGATEvaluator:
                     fitting_status_col,
                 ] = status
 
+    def _create_hover_text(self, row, include_params=True, include_scores=True):
+        """
+        为交互式图表创建悬停文本
+
+        参数:
+            row: DataFrame中的一行，包含模型信息
+            include_params: 是否包含模型参数，默认为True
+            include_scores: 是否包含分数信息，默认为True
+
+        返回:
+            str: 格式化的HTML悬停文本
+        """
+        # 模型类别名称映射
+        category_names = {
+            "baseline_mlp": "MLP模型",
+            "gat_selfloop": "GAT自环模型",
+            "gat_realedge": "GAT真实边模型",
+            "baseline_weights": "权重法",
+        }
+
+        # 收集模型的基本信息
+        params = [f"<b>{row['model_id']}</b>"]
+        params.append(
+            f"类别: {category_names.get(row['model_category'], row['model_category'])}"
+        )
+        params.append(f"折: {row['fold_num']}")
+
+        # 添加评分信息
+        if include_scores:
+            for score_type in ["MAP", "MRR"]:
+                train_score_col = f"train_{score_type}_score"
+                test_score_col = f"predict_{score_type}_score"
+                params.append(f"训练{score_type}: {row[train_score_col]:.4f}")
+                params.append(f"测试{score_type}: {row[test_score_col]:.4f}")
+
+            # 添加拟合状态
+            for score_type in ["MAP", "MRR"]:
+                fitting_status_col = f"fitting_status_{score_type}"
+                if fitting_status_col in row and not pd.isna(row[fitting_status_col]):
+                    params.append(f"{score_type}拟合状态: {row[fitting_status_col]}")
+
+        # 添加训练信息
+        if row["model_category"] != "baseline_weights":
+            params.append(f"停止原因: {row['stop_reason']}")
+            params.append(f"最佳轮次: {row['best_epoch']}")
+            params.append(f"总轮次: {row['final_epoch']}")
+
+        # 添加模型参数
+        if include_params:
+            model_params = ModelParameters.get_all_params()
+            params.append("<b>模型参数:</b>")
+            for param in model_params:
+                if param in row and not pd.isna(row[param]):
+                    params.append(f"{param}: {row[param]}")
+
+        return "<br>".join(params)
+
     def plot_interactive_training_curves(self):
         """
         创建交互式训练曲线图表，展示评估分数和损失随训练轮次的变化
@@ -723,7 +780,7 @@ class AdaptiveGATEvaluator:
             losses = summary.get("all_losses", [])
 
             # 使用create_hover_text函数获取详细的模型参数文本
-            base_hover_text = self.create_hover_text(
+            base_hover_text = self._create_hover_text(
                 model_row, include_params=True, include_scores=False
             )
 
@@ -1228,63 +1285,6 @@ class AdaptiveGATEvaluator:
         )
         plt.close()
 
-    def create_hover_text(self, row, include_params=True, include_scores=True):
-        """
-        为交互式图表创建悬停文本
-
-        参数:
-            row: DataFrame中的一行，包含模型信息
-            include_params: 是否包含模型参数，默认为True
-            include_scores: 是否包含分数信息，默认为True
-
-        返回:
-            str: 格式化的HTML悬停文本
-        """
-        # 模型类别名称映射
-        category_names = {
-            "baseline_mlp": "MLP模型",
-            "gat_selfloop": "GAT自环模型",
-            "gat_realedge": "GAT真实边模型",
-            "baseline_weights": "权重法",
-        }
-
-        # 收集模型的基本信息
-        params = [f"<b>{row['model_id']}</b>"]
-        params.append(
-            f"类别: {category_names.get(row['model_category'], row['model_category'])}"
-        )
-        params.append(f"折: {row['fold_num']}")
-
-        # 添加评分信息
-        if include_scores:
-            for score_type in ["MAP", "MRR"]:
-                train_score_col = f"train_{score_type}_score"
-                test_score_col = f"predict_{score_type}_score"
-                params.append(f"训练{score_type}: {row[train_score_col]:.4f}")
-                params.append(f"测试{score_type}: {row[test_score_col]:.4f}")
-
-            # 添加拟合状态
-            for score_type in ["MAP", "MRR"]:
-                fitting_status_col = f"fitting_status_{score_type}"
-                if fitting_status_col in row and not pd.isna(row[fitting_status_col]):
-                    params.append(f"{score_type}拟合状态: {row[fitting_status_col]}")
-
-        # 添加训练信息
-        if row["model_category"] != "baseline_weights":
-            params.append(f"停止原因: {row['stop_reason']}")
-            params.append(f"最佳轮次: {row['best_epoch']}")
-            params.append(f"总轮次: {row['final_epoch']}")
-
-        # 添加模型参数
-        if include_params:
-            model_params = ModelParameters.get_all_params()
-            params.append("<b>模型参数:</b>")
-            for param in model_params:
-                if param in row and not pd.isna(row[param]):
-                    params.append(f"{param}: {row[param]}")
-
-        return "<br>".join(params)
-
     def plot_interactive_model_comparison(self, score_type="MAP"):
         """
         创建交互式散点图，鼠标悬停时显示模型详细信息
@@ -1340,7 +1340,7 @@ class AdaptiveGATEvaluator:
                 if not category_models.empty:
                     # 生成hover文本
                     hover_texts = category_models.apply(
-                        self.create_hover_text, axis=1
+                        self._create_hover_text, axis=1
                     ).tolist()
 
                     # 添加散点
