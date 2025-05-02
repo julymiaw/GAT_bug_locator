@@ -732,31 +732,21 @@ class AdaptiveGATEvaluator:
                 {"index": i, "category": category, "fold": fold, "model_num": model_num}
             )
 
-        # 创建模型类型按钮（使用布尔逻辑）
+        # 创建模型类型按钮
         category_buttons = []
         for category, category_name in category_names.items():
+            # 生成过滤条件 - 只显示匹配当前类别的trace
+            visibility = []
+            for info in trace_info:
+                is_visible = info["category"] == category
+                visibility.append(is_visible)
+
             category_buttons.append(
                 dict(
                     method="update",
                     label=category_name,
                     args=[
-                        {
-                            "visible": [
-                                (
-                                    # 类别匹配，且当前激活的折和模型编号也匹配
-                                    info["category"] == category
-                                    and (
-                                        current_fold == "all"
-                                        or info["fold"] == current_fold
-                                    )
-                                    and (
-                                        current_model == "all"
-                                        or info["model_num"] == current_model
-                                    )
-                                )
-                                for info in trace_info
-                            ]
-                        },
+                        {"visible": visibility},
                         {"title": f"{category_name}模型的{fig_title}"},
                     ],
                 )
@@ -768,19 +758,7 @@ class AdaptiveGATEvaluator:
                 method="update",
                 label="全部模型类型",
                 args=[
-                    {
-                        "visible": [
-                            (
-                                # 折和模型编号匹配即可
-                                (current_fold == "all" or info["fold"] == current_fold)
-                                and (
-                                    current_model == "all"
-                                    or info["model_num"] == current_model
-                                )
-                            )
-                            for info in trace_info
-                        ]
-                    },
+                    {"visible": [True] * len(trace_info)},
                     {"title": f"所有模型类别的{fig_title}"},
                 ],
             )
@@ -789,28 +767,18 @@ class AdaptiveGATEvaluator:
         # 创建折按钮
         fold_buttons = []
         for fold in folds:
+            # 生成过滤条件 - 只显示匹配当前折的trace
+            visibility = []
+            for info in trace_info:
+                is_visible = info["fold"] == fold
+                visibility.append(is_visible)
+
             fold_buttons.append(
                 dict(
                     method="update",
                     label=f"折 {fold}",
                     args=[
-                        {
-                            "visible": [
-                                (
-                                    # 折匹配，且当前激活的类别和模型编号也匹配
-                                    info["fold"] == fold
-                                    and (
-                                        current_category == "all"
-                                        or info["category"] == current_category
-                                    )
-                                    and (
-                                        current_model == "all"
-                                        or info["model_num"] == current_model
-                                    )
-                                )
-                                for info in trace_info
-                            ]
-                        },
+                        {"visible": visibility},
                         {"title": f"折 {fold} 的{fig_title}"},
                     ],
                 )
@@ -822,22 +790,7 @@ class AdaptiveGATEvaluator:
                 method="update",
                 label="全部折",
                 args=[
-                    {
-                        "visible": [
-                            (
-                                # 类别和模型编号匹配即可
-                                (
-                                    current_category == "all"
-                                    or info["category"] == current_category
-                                )
-                                and (
-                                    current_model == "all"
-                                    or info["model_num"] == current_model
-                                )
-                            )
-                            for info in trace_info
-                        ]
-                    },
+                    {"visible": [True] * len(trace_info)},
                     {"title": f"所有折的{fig_title}"},
                 ],
             )
@@ -851,28 +804,18 @@ class AdaptiveGATEvaluator:
 
         model_buttons = []
         for model_num in model_nums_sorted:
+            # 生成过滤条件 - 只显示匹配当前模型编号的trace
+            visibility = []
+            for info in trace_info:
+                is_visible = info["model_num"] == model_num
+                visibility.append(is_visible)
+
             model_buttons.append(
                 dict(
                     method="update",
                     label=model_num,
                     args=[
-                        {
-                            "visible": [
-                                (
-                                    # 模型编号匹配，且当前激活的类别和折也匹配
-                                    info["model_num"] == model_num
-                                    and (
-                                        current_category == "all"
-                                        or info["category"] == current_category
-                                    )
-                                    and (
-                                        current_fold == "all"
-                                        or info["fold"] == current_fold
-                                    )
-                                )
-                                for info in trace_info
-                            ]
-                        },
+                        {"visible": visibility},
                         {"title": f"模型 {model_num} 的{fig_title}"},
                     ],
                 )
@@ -884,22 +827,7 @@ class AdaptiveGATEvaluator:
                 method="update",
                 label="全部",
                 args=[
-                    {
-                        "visible": [
-                            (
-                                # 类别和折匹配即可
-                                (
-                                    current_category == "all"
-                                    or info["category"] == current_category
-                                )
-                                and (
-                                    current_fold == "all"
-                                    or info["fold"] == current_fold
-                                )
-                            )
-                            for info in trace_info
-                        ]
-                    },
+                    {"visible": [True] * len(trace_info)},
                     {"title": f"所有模型的{fig_title}"},
                 ],
             )
@@ -1008,99 +936,118 @@ class AdaptiveGATEvaluator:
             showlegend=False,  # 禁用图例
         )
 
-        # 添加一个隐藏的状态存储，用于在JavaScript中存储当前选择
-        fig.add_trace(
-            go.Scatter(
-                x=[None],
-                y=[None],
-                mode="markers",
-                marker=dict(opacity=0),
-                showlegend=False,
-                hoverinfo="none",
-                customdata=[["all", "all", "all"]],  # [category, fold, model]
-                name="StateTracker",
-                visible=True,
-            )
-        )
-
-        # 向HTML输出添加JavaScript代码，用于记录和应用筛选状态
+        # 添加JavaScript用于"与"逻辑交互
         post_script = """
-        <script>
         var gd = document.getElementById('plotly-html-element');
-        var currentSelections = {
+        
+        // 存储当前选择的状态
+        var currentSelection = {
             category: "all",
             fold: "all",
             model: "all"
         };
-
-        // 监听菜单选择变更事件
-        gd.on('plotly_restyle', function(data) {
-            var updateData = data[0];
-
-            // 检查是哪个菜单被修改了
-            if (updateData.visible) {
-                // 尝试确定是哪个菜单被点击
-                var menuType = "";
-
-                // 基于修改的可见性模式来推断哪个菜单被点击
-                // 这需要进一步实现逻辑来区分不同菜单
-
-                // 更新存储的选择状态
-                if (menuType === "category") {
-                    currentSelections.category = "";
-                } else if (menuType === "fold") {
-                    currentSelections.fold = "";
-                } else if (menuType === "model") {
-                    currentSelections.model = "";
-                }
-
-                // 根据当前状态重新应用过滤
-                applyFilter();
-            }
-        });
-
-        function applyFilter() {
-            // 使用当前选择状态来隐藏/显示正确的曲线
-            var traces = [];
-            var update = {visible: []};
-
-            for (var i = 0; i < gd.data.length; i++) {
-                var trace = gd.data[i];
-                var isVisible = true;
-
-                if (trace.customdata && trace.customdata[0]) {
-                    // 应用类别过滤
-                    if (currentSelections.category !== "all" && 
-                        trace.customdata[0] !== currentSelections.category) {
-                        isVisible = false;
-                    }
-
-                    // 应用折过滤
-                    if (currentSelections.fold !== "all" && 
-                        trace.customdata[1] !== currentSelections.fold) {
-                        isVisible = false;
-                    }
-
-                    // 应用模型编号过滤 (这可能需要从名称中提取)
-                    if (currentSelections.model !== "all") {
-                        var modelNum = "";
-                        try {
-                            modelNum = trace.name.split("-")[1].split(" ")[0];
-                        } catch (e) {}
-
-                        if (modelNum !== currentSelections.model) {
-                            isVisible = false;
+        
+        // 初始化所有trace的原始可见性状态
+        var originalVisibility = [];
+        for(var i = 0; i < gd.data.length; i++) {
+            originalVisibility.push(gd.data[i].visible === false ? false : true);
+        }
+        
+        // 为每个下拉菜单添加事件监听器
+        gd.on('plotly_restyle', function(eventdata) {
+            var update = eventdata[0];
+            
+            // 检测是否为按钮点击事件（通过检查visible属性被修改）
+            if(update.hasOwnProperty('visible')) {
+                // 从按钮标题推断出被点击的是哪个菜单
+                var relayout = eventdata[1];
+                if(relayout && relayout.length > 0) {
+                    var activeMenu = -1;
+                    
+                    // 尝试确定哪个菜单被点击了
+                    if(gd._fullLayout.updatemenus) {
+                        for(var i = 0; i < gd._fullLayout.updatemenus.length; i++) {
+                            var menu = gd._fullLayout.updatemenus[i];
+                            if(menu.active !== undefined && menu.active !== -1) {
+                                activeMenu = i;
+                                break;
+                            }
                         }
                     }
+                    
+                    // 根据点击的菜单，更新当前状态
+                    if(activeMenu === 0) {
+                        // 更新类别选择
+                        if(gd._fullLayout.updatemenus[0].active === gd._fullLayout.updatemenus[0].buttons.length - 1) {
+                            currentSelection.category = "all";
+                        } else {
+                            var category = Object.keys(eventdata[0])[0];
+                            currentSelection.category = category;
+                        }
+                    } else if(activeMenu === 1) {
+                        // 更新折选择
+                        if(gd._fullLayout.updatemenus[1].active === gd._fullLayout.updatemenus[1].buttons.length - 1) {
+                            currentSelection.fold = "all";
+                        } else {
+                            var fold = Object.keys(eventdata[0])[0];
+                            currentSelection.fold = fold;
+                        }
+                    } else if(activeMenu === 2) {
+                        // 更新模型编号选择
+                        if(gd._fullLayout.updatemenus[2].active === gd._fullLayout.updatemenus[2].buttons.length - 1) {
+                            currentSelection.model = "all";
+                        } else {
+                            var model = Object.keys(eventdata[0])[0];
+                            currentSelection.model = model;
+                        }
+                    }
+                    
+                    // 应用组合筛选
+                    applyFilters();
                 }
-
+            }
+        });
+        
+        // 应用组合筛选逻辑
+        function applyFilters() {
+            var update = {visible: []};
+            var traces = [];
+            
+            for(var i = 0; i < gd.data.length; i++) {
+                var trace = gd.data[i];
                 traces.push(i);
+                
+                // 默认可见性
+                var isVisible = originalVisibility[i];
+                
+                if(isVisible && trace.customdata && trace.customdata.length >= 2) {
+                    var category = trace.customdata[0];
+                    var fold = trace.customdata[1];
+                    var modelNum = "";
+                    
+                    try {
+                        modelNum = trace.name.split("-")[-1].split()[0];
+                    } catch(e) {}
+                    
+                    // 应用"与"逻辑
+                    if(currentSelection.category !== "all" && category !== currentSelection.category) {
+                        isVisible = false;
+                    }
+                    
+                    if(currentSelection.fold !== "all" && fold !== currentSelection.fold) {
+                        isVisible = false;
+                    }
+                    
+                    if(currentSelection.model !== "all" && modelNum !== currentSelection.model) {
+                        isVisible = false;
+                    }
+                }
+                
                 update.visible.push(isVisible);
             }
-
+            
             Plotly.restyle(gd, update, traces);
         }
-        </script>
         """
 
         return fig, post_script
