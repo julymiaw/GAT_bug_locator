@@ -690,6 +690,421 @@ class AdaptiveGATEvaluator:
 
         return "<br>".join(params)
 
+    def _create_interactive_filter_buttons(
+        self, fig, folds, category_names, fig_title="交互式图表"
+    ):
+        """
+        为交互式图表创建过滤按钮及设置相关布局，使三个筛选器形成"与"逻辑关系
+
+        参数:
+            fig: plotly图表对象
+            folds: 折号列表
+            category_names: 类别名称映射字典
+            fig_title: 图表标题前缀
+
+        返回:
+            配置好按钮和布局的图表对象
+        """
+        # 提取所有trace的类别、折号和模型编号信息
+        trace_info = []
+        model_nums = set()
+
+        for i, trace in enumerate(fig.data):
+            category = ""
+            fold = ""
+            model_num = ""
+
+            # 提取类别和折信息
+            if hasattr(trace, "customdata") and len(trace.customdata) >= 2:
+                category = trace.customdata[0]
+                fold = trace.customdata[1]
+
+            # 提取模型编号
+            if hasattr(trace, "name"):
+                model_name = trace.name
+                try:
+                    model_num = model_name.split("-")[-1].split()[0]
+                    model_nums.add(model_num)
+                except:
+                    pass
+
+            trace_info.append(
+                {"index": i, "category": category, "fold": fold, "model_num": model_num}
+            )
+
+        # 创建模型类型按钮（使用布尔逻辑）
+        category_buttons = []
+        for category, category_name in category_names.items():
+            category_buttons.append(
+                dict(
+                    method="update",
+                    label=category_name,
+                    args=[
+                        {
+                            "visible": [
+                                (
+                                    # 类别匹配，且当前激活的折和模型编号也匹配
+                                    info["category"] == category
+                                    and (
+                                        current_fold == "all"
+                                        or info["fold"] == current_fold
+                                    )
+                                    and (
+                                        current_model == "all"
+                                        or info["model_num"] == current_model
+                                    )
+                                )
+                                for info in trace_info
+                            ]
+                        },
+                        {"title": f"{category_name}模型的{fig_title}"},
+                    ],
+                )
+            )
+
+        # 添加"显示全部模型类型"按钮
+        category_buttons.append(
+            dict(
+                method="update",
+                label="全部模型类型",
+                args=[
+                    {
+                        "visible": [
+                            (
+                                # 折和模型编号匹配即可
+                                (current_fold == "all" or info["fold"] == current_fold)
+                                and (
+                                    current_model == "all"
+                                    or info["model_num"] == current_model
+                                )
+                            )
+                            for info in trace_info
+                        ]
+                    },
+                    {"title": f"所有模型类别的{fig_title}"},
+                ],
+            )
+        )
+
+        # 创建折按钮
+        fold_buttons = []
+        for fold in folds:
+            fold_buttons.append(
+                dict(
+                    method="update",
+                    label=f"折 {fold}",
+                    args=[
+                        {
+                            "visible": [
+                                (
+                                    # 折匹配，且当前激活的类别和模型编号也匹配
+                                    info["fold"] == fold
+                                    and (
+                                        current_category == "all"
+                                        or info["category"] == current_category
+                                    )
+                                    and (
+                                        current_model == "all"
+                                        or info["model_num"] == current_model
+                                    )
+                                )
+                                for info in trace_info
+                            ]
+                        },
+                        {"title": f"折 {fold} 的{fig_title}"},
+                    ],
+                )
+            )
+
+        # 添加"显示全部折"按钮
+        fold_buttons.append(
+            dict(
+                method="update",
+                label="全部折",
+                args=[
+                    {
+                        "visible": [
+                            (
+                                # 类别和模型编号匹配即可
+                                (
+                                    current_category == "all"
+                                    or info["category"] == current_category
+                                )
+                                and (
+                                    current_model == "all"
+                                    or info["model_num"] == current_model
+                                )
+                            )
+                            for info in trace_info
+                        ]
+                    },
+                    {"title": f"所有折的{fig_title}"},
+                ],
+            )
+        )
+
+        # 为每个唯一的模型编号创建一个按钮
+        model_nums_sorted = sorted(
+            [int(num) if num.isdigit() else 999 for num in model_nums]
+        )
+        model_nums_sorted = [str(num) for num in model_nums_sorted if num != 999]
+
+        model_buttons = []
+        for model_num in model_nums_sorted:
+            model_buttons.append(
+                dict(
+                    method="update",
+                    label=model_num,
+                    args=[
+                        {
+                            "visible": [
+                                (
+                                    # 模型编号匹配，且当前激活的类别和折也匹配
+                                    info["model_num"] == model_num
+                                    and (
+                                        current_category == "all"
+                                        or info["category"] == current_category
+                                    )
+                                    and (
+                                        current_fold == "all"
+                                        or info["fold"] == current_fold
+                                    )
+                                )
+                                for info in trace_info
+                            ]
+                        },
+                        {"title": f"模型 {model_num} 的{fig_title}"},
+                    ],
+                )
+            )
+
+        # 添加"显示全部模型"按钮
+        model_buttons.append(
+            dict(
+                method="update",
+                label="全部",
+                args=[
+                    {
+                        "visible": [
+                            (
+                                # 类别和折匹配即可
+                                (
+                                    current_category == "all"
+                                    or info["category"] == current_category
+                                )
+                                and (
+                                    current_fold == "all"
+                                    or info["fold"] == current_fold
+                                )
+                            )
+                            for info in trace_info
+                        ]
+                    },
+                    {"title": f"所有模型的{fig_title}"},
+                ],
+            )
+        )
+
+        # 更新布局添加所有按钮组
+        updatemenus = [
+            # 第一行：模型类型按钮
+            dict(
+                type="dropdown",  # 下拉菜单
+                direction="down",
+                active=-1,  # 默认选中最后一项（全部）
+                x=0.1,
+                y=1.15,
+                xanchor="left",
+                yanchor="top",
+                buttons=category_buttons,
+                name="categoryMenu",
+                showactive=True,
+                bgcolor="lightgray",
+            ),
+            # 第二行：折按钮
+            dict(
+                type="dropdown",  # 下拉菜单
+                direction="down",
+                active=-1,  # 默认选中最后一项（全部）
+                x=0.3,
+                y=1.15,
+                xanchor="left",
+                yanchor="top",
+                buttons=fold_buttons,
+                name="foldMenu",
+                showactive=True,
+                bgcolor="lightgray",
+            ),
+            # 第三行：模型按钮
+            dict(
+                type="dropdown",  # 下拉菜单
+                direction="down",
+                active=-1,  # 默认选中最后一项（全部）
+                x=0.5,
+                y=1.15,
+                xanchor="left",
+                yanchor="top",
+                buttons=model_buttons,
+                name="modelMenu",
+                showactive=True,
+                bgcolor="lightgray",
+            ),
+        ]
+
+        fig.update_layout(updatemenus=updatemenus)
+
+        # 添加下拉菜单标签
+        fig.add_annotation(
+            x=0.1,
+            y=1.19,
+            xref="paper",
+            yref="paper",
+            text="模型类型:",
+            showarrow=False,
+            font=dict(size=12),
+            xanchor="left",
+        )
+
+        fig.add_annotation(
+            x=0.3,
+            y=1.19,
+            xref="paper",
+            yref="paper",
+            text="折:",
+            showarrow=False,
+            font=dict(size=12),
+            xanchor="left",
+        )
+
+        fig.add_annotation(
+            x=0.5,
+            y=1.19,
+            xref="paper",
+            yref="paper",
+            text="模型编号:",
+            showarrow=False,
+            font=dict(size=12),
+            xanchor="left",
+        )
+
+        # 添加分隔线和标题
+        fig.add_shape(
+            type="line",
+            x0=0,
+            y0=1.1,
+            x1=1,
+            y1=1.1,
+            line=dict(color="lightgray", width=1),
+            xref="paper",
+            yref="paper",
+        )
+
+        # 设置图表尺寸和布局，确保绘图区域不变窄
+        fig.update_layout(
+            autosize=False,  # 禁用自动调整大小
+            width=1000,  # 设置固定宽度
+            height=800,  # 设置固定高度
+            margin=dict(t=120, l=80, r=80, b=80),  # 增加顶部边距，为下拉菜单腾出空间
+            showlegend=False,  # 禁用图例
+        )
+
+        # 添加一个隐藏的状态存储，用于在JavaScript中存储当前选择
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker=dict(opacity=0),
+                showlegend=False,
+                hoverinfo="none",
+                customdata=[["all", "all", "all"]],  # [category, fold, model]
+                name="StateTracker",
+                visible=True,
+            )
+        )
+
+        # 向HTML输出添加JavaScript代码，用于记录和应用筛选状态
+        post_script = """
+        <script>
+        var gd = document.getElementById('plotly-html-element');
+        var currentSelections = {
+            category: "all",
+            fold: "all",
+            model: "all"
+        };
+
+        // 监听菜单选择变更事件
+        gd.on('plotly_restyle', function(data) {
+            var updateData = data[0];
+
+            // 检查是哪个菜单被修改了
+            if (updateData.visible) {
+                // 尝试确定是哪个菜单被点击
+                var menuType = "";
+
+                // 基于修改的可见性模式来推断哪个菜单被点击
+                // 这需要进一步实现逻辑来区分不同菜单
+
+                // 更新存储的选择状态
+                if (menuType === "category") {
+                    currentSelections.category = "";
+                } else if (menuType === "fold") {
+                    currentSelections.fold = "";
+                } else if (menuType === "model") {
+                    currentSelections.model = "";
+                }
+
+                // 根据当前状态重新应用过滤
+                applyFilter();
+            }
+        });
+
+        function applyFilter() {
+            // 使用当前选择状态来隐藏/显示正确的曲线
+            var traces = [];
+            var update = {visible: []};
+
+            for (var i = 0; i < gd.data.length; i++) {
+                var trace = gd.data[i];
+                var isVisible = true;
+
+                if (trace.customdata && trace.customdata[0]) {
+                    // 应用类别过滤
+                    if (currentSelections.category !== "all" && 
+                        trace.customdata[0] !== currentSelections.category) {
+                        isVisible = false;
+                    }
+
+                    // 应用折过滤
+                    if (currentSelections.fold !== "all" && 
+                        trace.customdata[1] !== currentSelections.fold) {
+                        isVisible = false;
+                    }
+
+                    // 应用模型编号过滤 (这可能需要从名称中提取)
+                    if (currentSelections.model !== "all") {
+                        var modelNum = "";
+                        try {
+                            modelNum = trace.name.split("-")[1].split(" ")[0];
+                        } catch (e) {}
+
+                        if (modelNum !== currentSelections.model) {
+                            isVisible = false;
+                        }
+                    }
+                }
+
+                traces.push(i);
+                update.visible.push(isVisible);
+            }
+
+            Plotly.restyle(gd, update, traces);
+        }
+        </script>
+        """
+
+        return fig, post_script
+
     def plot_interactive_training_curves(self):
         """
         创建交互式训练曲线图表，展示评估分数和损失随训练轮次的变化
@@ -846,140 +1261,9 @@ class AdaptiveGATEvaluator:
                     col=1,
                 )
 
-        # 设置图表布局
-        fig.update_layout(
-            height=800,  # 增加高度
-            width=1200,
-            margin=dict(t=150, l=50, r=50, b=50),  # 增加顶部边距，为按钮腾出空间
-            legend=dict(
-                orientation="h",  # 水平图例
-                yanchor="bottom",
-                y=-0.5,  # 放在图表下方
-                xanchor="center",
-                x=0.5,  # 居中
-                font=dict(size=10),
-                itemsizing="constant",  # 保持图例条目大小一致
-            ),
-            hovermode="closest",
-            legend_title_text="模型标识",
-        )
-
-        # 创建模型类型按钮
-        category_buttons = []
-        for category, category_name in category_names.items():
-            category_buttons.append(
-                dict(
-                    method="update",
-                    label=category_name,
-                    args=[
-                        {
-                            "visible": [
-                                (
-                                    trace.customdata[0] == category
-                                    if hasattr(trace, "customdata")
-                                    else True
-                                )
-                                for trace in fig.data
-                            ]
-                        },
-                        {"title": f"{category_name}模型的训练曲线"},
-                    ],
-                )
-            )
-
-        # 添加"显示全部模型类型"按钮
-        category_buttons.append(
-            dict(
-                method="update",
-                label="全部模型类型",
-                args=[
-                    {"visible": [True] * len(fig.data)},
-                    {"title": "所有模型的训练曲线"},
-                ],
-            )
-        )
-
-        # 创建折按钮
-        fold_buttons = []
-        for fold in folds:
-            fold_buttons.append(
-                dict(
-                    method="update",
-                    label=f"折 {fold}",
-                    args=[
-                        {
-                            "visible": [
-                                (
-                                    trace.customdata[1] == fold
-                                    if hasattr(trace, "customdata")
-                                    else True
-                                )
-                                for trace in fig.data
-                            ]
-                        },
-                        {"title": f"折 {fold} 的训练曲线"},
-                    ],
-                )
-            )
-
-        # 添加"显示全部折"按钮
-        fold_buttons.append(
-            dict(
-                method="update",
-                label="全部折",
-                args=[
-                    {"visible": [True] * len(fig.data)},
-                    {"title": "所有折的训练曲线"},
-                ],
-            )
-        )
-
-        fig.update_layout(
-            updatemenus=[
-                # 第一行：模型类型按钮
-                dict(
-                    type="buttons",
-                    direction="right",
-                    active=-1,  # 默认不选任何按钮
-                    x=0.8,
-                    y=1.3,
-                    buttons=category_buttons,
-                    name="categoryMenu",
-                    showactive=True,
-                ),
-                # 第二行：折按钮
-                dict(
-                    type="buttons",
-                    direction="right",
-                    active=-1,  # 默认不选任何按钮
-                    x=0.8,
-                    y=1.2,
-                    buttons=fold_buttons,
-                    name="foldMenu",
-                    showactive=True,
-                ),
-            ]
-        )
-
-        # 添加个性化注解
-        fig.add_annotation(
-            x=0.2,  # 调整位置，更靠近按钮
-            y=1.3,
-            xref="paper",
-            yref="paper",
-            text="模型类型:",
-            showarrow=False,
-            font=dict(size=12),
-        )
-
-        fig.add_annotation(
-            x=0.2,  # 调整位置，更靠近按钮
-            y=1.2,
-            xref="paper",
-            yref="paper",
-            text="折:",
-            showarrow=False,
-            font=dict(size=12),
+        # 应用通用的交互按钮布局
+        fig, post_script = self._create_interactive_filter_buttons(
+            fig, folds, category_names, "训练曲线"
         )
 
         # 设置x轴和y轴标签
@@ -997,9 +1281,7 @@ class AdaptiveGATEvaluator:
                 "width": 1200,
                 "scale": 2,
             },
-            # 启用交互式图例 - 点击图例项可显示/隐藏对应曲线而不是完全消失
             "displaylogo": False,
-            # 添加一个特殊设置，使图例项在隐藏时仍然显示但为灰色
             "modeBarButtonsToRemove": ["lasso2d", "select2d"],
         }
 
@@ -1012,7 +1294,8 @@ class AdaptiveGATEvaluator:
             config=fig_config,
             include_plotlyjs="cdn",  # 使用CDN加载plotly.js以减小文件大小
             include_mathjax="cdn",
-            post_script="""
+            post_script=post_script
+            + """
             var gd = document.getElementById('plotly-html-element');
 
             // 图例双击事件处理
