@@ -694,7 +694,9 @@ class AdaptiveGATEvaluator:
 
         return "<br>".join(params)
 
-    def _create_interactive_filter_buttons(self, fig: go.Figure, folds, category_names):
+    def _create_interactive_filter_buttons(
+        self, fig: go.Figure, folds, category_names, simple_mode=False
+    ):
         """
         为交互式图表创建过滤按钮及设置相关布局，使三个筛选器形成"与"逻辑关系
 
@@ -702,33 +704,19 @@ class AdaptiveGATEvaluator:
             fig: plotly图表对象
             folds: 折号列表
             category_names: 类别名称映射字典
+            simple_mode: 布尔值，若为True，则仅显示fold按钮（用于模型对比图）
 
         返回:
             配置好按钮和布局的图表对象
         """
         model_nums = set()
 
-        for i, trace in enumerate(fig.data):
-            # 提取模型编号
-            if trace.customdata:
-                model_num = trace.customdata[2]
-                model_nums.add(model_num)
-
-        # 创建模型类型按钮
-        category_buttons = []
-        for _, category_name in category_names.items():
-            category_buttons.append(
-                dict(
-                    method=None,  # 这里设置为None或空字符串
-                    label=category_name,
-                    args=[{}, {}],  # 空参数
-                )
-            )
-
-        # 添加"显示全部模型类型"按钮
-        category_buttons.append(
-            dict(method=None, label="全部模型类型", args=[{}, {}])  # 不执行任何操作
-        )
+        if not simple_mode:
+            for i, trace in enumerate(fig.data):
+                # 提取模型编号
+                if trace.customdata:
+                    model_num = trace.customdata[2]
+                    model_nums.add(model_num)
 
         # 创建折按钮
         fold_buttons = []
@@ -738,98 +726,147 @@ class AdaptiveGATEvaluator:
         # 添加"显示全部折"按钮
         fold_buttons.append(dict(method=None, label="全部折", args=[{}, {}]))
 
-        # 为每个唯一的模型编号创建一个按钮
-        model_nums_sorted = sorted(model_nums)
-        model_nums_sorted = [str(num) for num in model_nums_sorted if num != 999]
+        updatemenus = []
 
-        model_buttons = []
-        for model_num in model_nums_sorted:
-            model_buttons.append(dict(method=None, label=model_num, args=[{}, {}]))
+        # 在简化模式下，只添加折按钮
+        if simple_mode:
+            updatemenus = [
+                # 只添加折按钮，并将其放置在中央
+                dict(
+                    type="dropdown",  # 下拉菜单
+                    direction="down",
+                    active=-1,  # 默认选中最后一项（全部）
+                    x=0.5,
+                    y=1.15,
+                    xanchor="center",
+                    yanchor="top",
+                    buttons=fold_buttons,
+                    name="foldMenu",
+                    showactive=True,
+                    bgcolor="lightgray",
+                )
+            ]
+        else:
+            # 创建模型类型按钮
+            category_buttons = []
+            for _, category_name in category_names.items():
+                category_buttons.append(
+                    dict(
+                        method=None,  # 这里设置为None或空字符串
+                        label=category_name,
+                        args=[{}, {}],  # 空参数
+                    )
+                )
 
-        # 添加"显示全部模型"按钮
-        model_buttons.append(dict(method=None, label="全部", args=[{}, {}]))
+            # 添加"显示全部模型类型"按钮
+            category_buttons.append(
+                dict(method=None, label="全部模型类型", args=[{}, {}])  # 不执行任何操作
+            )
 
-        # 更新布局添加所有按钮组
-        updatemenus = [
-            # 第一行：模型类型按钮
-            dict(
-                type="dropdown",  # 下拉菜单
-                direction="down",
-                active=-1,  # 默认选中最后一项（全部）
-                x=0.1,
-                y=1.15,
-                xanchor="left",
-                yanchor="top",
-                buttons=category_buttons,
-                name="categoryMenu",
-                showactive=True,
-                bgcolor="lightgray",
-            ),
-            # 第二行：折按钮
-            dict(
-                type="dropdown",  # 下拉菜单
-                direction="down",
-                active=-1,  # 默认选中最后一项（全部）
-                x=0.3,
-                y=1.15,
-                xanchor="left",
-                yanchor="top",
-                buttons=fold_buttons,
-                name="foldMenu",
-                showactive=True,
-                bgcolor="lightgray",
-            ),
-            # 第三行：模型按钮
-            dict(
-                type="dropdown",  # 下拉菜单
-                direction="down",
-                active=-1,  # 默认选中最后一项（全部）
-                x=0.5,
-                y=1.15,
-                xanchor="left",
-                yanchor="top",
-                buttons=model_buttons,
-                name="modelMenu",
-                showactive=True,
-                bgcolor="lightgray",
-            ),
-        ]
+            # 为每个唯一的模型编号创建一个按钮
+            model_nums_sorted = sorted(model_nums)
+            model_nums_sorted = [str(num) for num in model_nums_sorted if num != 999]
+
+            model_buttons = []
+            for model_num in model_nums_sorted:
+                model_buttons.append(dict(method=None, label=model_num, args=[{}, {}]))
+
+            # 添加"显示全部模型"按钮
+            model_buttons.append(dict(method=None, label="全部", args=[{}, {}]))
+
+            # 更新布局添加所有按钮组
+            updatemenus = [
+                # 第一行：模型类型按钮
+                dict(
+                    type="dropdown",  # 下拉菜单
+                    direction="down",
+                    active=-1,  # 默认选中最后一项（全部）
+                    x=0.1,
+                    y=1.15,
+                    xanchor="left",
+                    yanchor="top",
+                    buttons=category_buttons,
+                    name="categoryMenu",
+                    showactive=True,
+                    bgcolor="lightgray",
+                ),
+                # 第二行：折按钮
+                dict(
+                    type="dropdown",  # 下拉菜单
+                    direction="down",
+                    active=-1,  # 默认选中最后一项（全部）
+                    x=0.3,
+                    y=1.15,
+                    xanchor="left",
+                    yanchor="top",
+                    buttons=fold_buttons,
+                    name="foldMenu",
+                    showactive=True,
+                    bgcolor="lightgray",
+                ),
+                # 第三行：模型按钮
+                dict(
+                    type="dropdown",  # 下拉菜单
+                    direction="down",
+                    active=-1,  # 默认选中最后一项（全部）
+                    x=0.5,
+                    y=1.15,
+                    xanchor="left",
+                    yanchor="top",
+                    buttons=model_buttons,
+                    name="modelMenu",
+                    showactive=True,
+                    bgcolor="lightgray",
+                ),
+            ]
 
         fig.update_layout(updatemenus=updatemenus)
 
         # 添加下拉菜单标签
-        fig.add_annotation(
-            x=0.1,
-            y=1.19,
-            xref="paper",
-            yref="paper",
-            text="模型类型:",
-            showarrow=False,
-            font=dict(size=12),
-            xanchor="left",
-        )
+        if simple_mode:
+            fig.add_annotation(
+                x=0.3,
+                y=1.19,
+                xref="paper",
+                yref="paper",
+                text="折:",
+                showarrow=False,
+                font=dict(size=12),
+                xanchor="left",
+            )
+        else:
+            fig.add_annotation(
+                x=0.1,
+                y=1.19,
+                xref="paper",
+                yref="paper",
+                text="模型类型:",
+                showarrow=False,
+                font=dict(size=12),
+                xanchor="left",
+            )
 
-        fig.add_annotation(
-            x=0.3,
-            y=1.19,
-            xref="paper",
-            yref="paper",
-            text="折:",
-            showarrow=False,
-            font=dict(size=12),
-            xanchor="left",
-        )
+            fig.add_annotation(
+                x=0.3,
+                y=1.19,
+                xref="paper",
+                yref="paper",
+                text="折:",
+                showarrow=False,
+                font=dict(size=12),
+                xanchor="left",
+            )
 
-        fig.add_annotation(
-            x=0.5,
-            y=1.19,
-            xref="paper",
-            yref="paper",
-            text="模型编号:",
-            showarrow=False,
-            font=dict(size=12),
-            xanchor="left",
-        )
+            fig.add_annotation(
+                x=0.5,
+                y=1.19,
+                xref="paper",
+                yref="paper",
+                text="模型编号:",
+                showarrow=False,
+                font=dict(size=12),
+                xanchor="left",
+            )
 
         # 设置图表尺寸和布局，确保绘图区域不变窄
         fig.update_layout(
@@ -841,7 +878,8 @@ class AdaptiveGATEvaluator:
         )
 
         # 添加JavaScript用于"与"逻辑交互
-        post_script = """
+        post_script = (
+            """
         var gd = document.querySelectorAll('div.js-plotly-plot')[0];
         
         // 存储当前选择的状态
@@ -850,14 +888,20 @@ class AdaptiveGATEvaluator:
             fold: "all",
             model: "all"
         };
+
+        // 判断是否为简化模式
+        var simpleMode = """
+            + ("true" if simple_mode else "false")
+            + """;
+        console.log("简化模式:", simpleMode);
         
         // 从Plotly对象中提取曲线信息
         var traceInfo = extractTraceInfo(gd);
         
         // 提取按类别、折叠和模型编号分组的曲线索引
-        var categoryGroups = groupTracesByProperty(traceInfo, 'category');
         var foldGroups = groupTracesByProperty(traceInfo, 'fold');
-        var modelGroups = groupTracesByProperty(traceInfo, 'modelNum');
+        var categoryGroups = simpleMode ? {} : groupTracesByProperty(traceInfo, 'category');
+        var modelGroups = simpleMode ? {} : groupTracesByProperty(traceInfo, 'modelNum');
         
         console.log("分类组数:", Object.keys(categoryGroups).length);
         console.log("折叠组数:", Object.keys(foldGroups).length);
@@ -871,19 +915,23 @@ class AdaptiveGATEvaluator:
                 console.log("检测到菜单按钮区域被点击");
                 
                 // 识别是哪个下拉菜单
-                var filterType = identifyMenuType(menuButton);
+                var filterType = identifyMenuType(menuButton, simpleMode);
                 console.log("识别到菜单类型:", filterType);
                 
                 // 添加延迟以确保下拉菜单已经展开
                 setTimeout(function() {
                     // 为所有菜单项添加点击监听
-                    setupMenuItemListeners(filterType, currentSelection);
+                    setupMenuItemListeners(filterType, currentSelection, simpleMode);
                 }, 100);
             }
         }, true);
 
         // 从类名和位置识别菜单类型
-        function identifyMenuType(menuButton) {
+        function identifyMenuType(menuButton, simpleMode) {
+            if (simpleMode) {
+                return "fold";  // 简化模式下只有fold菜单
+            }
+
             // 尝试通过位置判断
             var rect = menuButton.getBoundingClientRect();
             var centerX = rect.left + rect.width / 2;
@@ -898,7 +946,7 @@ class AdaptiveGATEvaluator:
         }
         
         // 为菜单项设置点击监听
-        function setupMenuItemListeners(filterType, currentSelection) {
+        function setupMenuItemListeners(filterType, currentSelection, simpleMode) {
             var menuItems = document.querySelectorAll('.updatemenu-dropdown-button');
             console.log("找到菜单项:", menuItems.length, "个");
             
@@ -912,16 +960,16 @@ class AdaptiveGATEvaluator:
                     console.log("菜单项被点击:", itemText, "类型:", filterType);
                     
                     // 更新当前筛选状态
-                    if (filterType === "category") {
-                        currentSelection.category = itemText === "全部模型类型" ? "all" : itemText;
-                    } else if (filterType === "fold") {
+                    if (filterType === "fold") {
                         if (itemText === "全部折") {
                             currentSelection.fold = "all";
                         } else {
                             // 从"折 0"中提取数字
                             currentSelection.fold = itemText.replace("折 ", "");
                         }
-                    } else if (filterType === "model") {
+                    } else if (!simpleMode && filterType === "category") {
+                        currentSelection.category = itemText === "全部模型类型" ? "all" : itemText;
+                    } else if (!simpleMode && filterType === "model") {
                         currentSelection.model = itemText === "全部" ? "all" : itemText;
                     }
                     
@@ -936,6 +984,7 @@ class AdaptiveGATEvaluator:
                             categoryGroups, 
                             foldGroups, 
                             modelGroups,
+                            simpleMode,
                         );
                     }, 100);
                 });
@@ -993,6 +1042,7 @@ class AdaptiveGATEvaluator:
             categoryGroups, 
             foldGroups, 
             modelGroups,
+            simpleMode,
         ) {
             console.log("应用筛选逻辑, 当前状态:", selection);
 
@@ -1014,20 +1064,23 @@ class AdaptiveGATEvaluator:
                 // 默认继承原始可见性
                 var isVisible = true;
 
-                // 如果曲线原本可见,则应用筛选条件
-                if (isVisible) {
-                    if (selection.category !== "all" && 
+                // 应用折筛选条件
+                if (selection.fold !== "all" && 
+                    foldGroups[selection.fold] && 
+                    !foldGroups[selection.fold].includes(traceIdx)) {
+                    isVisible = false;
+                }
+
+                // 在非简化模式下，应用其他筛选条件
+                if (!simpleMode) {
+                    // 应用类别筛选条件
+                    if (isVisible && selection.category !== "all" && 
                         categoryGroups[selection.category] && 
                         !categoryGroups[selection.category].includes(traceIdx)) {
                         isVisible = false;
                     }
-
-                    if (isVisible && selection.fold !== "all" && 
-                        foldGroups[selection.fold] && 
-                        !foldGroups[selection.fold].includes(traceIdx)) {
-                        isVisible = false;
-                    }
-
+                    
+                    // 应用模型编号筛选条件
                     if (isVisible && selection.model !== "all" && 
                         modelGroups[selection.model] && 
                         !modelGroups[selection.model].includes(traceIdx)) {
@@ -1046,6 +1099,7 @@ class AdaptiveGATEvaluator:
             }, updateIndices);
         }
         """
+        )
 
         return fig, post_script
 
@@ -1671,12 +1725,13 @@ class AdaptiveGATEvaluator:
                         line=dict(color="grey", width=1, dash="dash"),
                         showlegend=False,
                         hoverinfo="skip",
+                        customdata=[None, fold, None],
                     )
                 )
 
         # 应用通用的交互按钮布局
         fig, post_script = self._create_interactive_filter_buttons(
-            fig, folds, category_names
+            fig, folds, category_names, simple_mode=True
         )
 
         # 设置图表布局
