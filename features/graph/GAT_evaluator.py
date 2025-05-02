@@ -1582,37 +1582,29 @@ class AdaptiveGATEvaluator:
                         self._create_hover_text, axis=1
                     ).tolist()
 
-                    for model_id in category_models["model_id"]:
-                        try:
-                            # 尝试从model_id中提取数字部分并转换为整数
-                            model_num = int(model_id.split("_")[-1])
-                        except (ValueError, IndexError):
-                            # 如果出现异常，使用默认值
-                            model_num = 999
-                        model = category_models[category_models["model_id"] == model_id]
-                        fig.add_trace(
-                            go.Scatter(
-                                x=model[train_score_col],
-                                y=model[test_score_col],
-                                mode="markers",
-                                marker=dict(
-                                    size=12,
-                                    color=fold_colors[fold],
-                                    symbol={
-                                        "baseline_mlp": "triangle-up",
-                                        "gat_selfloop": "square",
-                                        "gat_realedge": "circle",
-                                        "baseline_weights": "x",
-                                    }.get(category, "circle"),
-                                    line=dict(width=1, color="DarkSlateGrey"),
-                                ),
-                                name=f"{category_names[category]} (折 {fold})",
-                                customdata=[category_names[category], fold, model_num],
-                                text=hover_texts,
-                                hoverinfo="text",
-                                showlegend=True,
-                            )
+                    fig.add_trace(
+                        go.Scatter(
+                            x=category_models[train_score_col],
+                            y=category_models[test_score_col],
+                            mode="markers",
+                            marker=dict(
+                                size=12,
+                                color=fold_colors[fold],
+                                symbol={
+                                    "baseline_mlp": "triangle-up",
+                                    "gat_selfloop": "square",
+                                    "gat_realedge": "circle",
+                                    "baseline_weights": "x",
+                                }.get(category, "circle"),
+                                line=dict(width=1, color="DarkSlateGrey"),
+                            ),
+                            name=f"{category_names[category]} (折 {fold})",
+                            customdata=[None, fold, None],
+                            text=hover_texts,
+                            hoverinfo="text",
+                            showlegend=True,
                         )
+                    )
 
                     # 根据拟合状态添加边框
                     for fitting_status, edge_color in fitting_edge_colors.items():
@@ -1622,41 +1614,27 @@ class AdaptiveGATEvaluator:
                             ]
 
                             if not status_models.empty:
-                                for model_id in status_models["model_id"]:
-                                    try:
-                                        # 尝试从model_id中提取数字部分并转换为整数
-                                        model_num = int(model_id.split("_")[-1])
-                                    except (ValueError, IndexError):
-                                        # 如果出现异常，使用默认值
-                                        model_num = 999
-                                    model = status_models[
-                                        status_models["model_id"] == model_id
-                                    ]
-                                    fig.add_trace(
-                                        go.Scatter(
-                                            x=model[train_score_col],
-                                            y=model[test_score_col],
-                                            mode="markers",
-                                            marker=dict(
-                                                size=16,  # 稍大一点以便边框可见
-                                                color="rgba(0,0,0,0)",  # 透明填充
-                                                symbol={
-                                                    "baseline_mlp": "triangle-up",
-                                                    "gat_selfloop": "square",
-                                                    "gat_realedge": "circle",
-                                                }.get(category, "circle"),
-                                                line=dict(width=2, color=edge_color),
-                                            ),
-                                            name=f"{fitting_status} (折 {fold})",
-                                            customdata=[
-                                                category_names[category],
-                                                fold,
-                                                model_num,
-                                            ],
-                                            hoverinfo="text",
-                                            showlegend=False,
-                                        )
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=status_models[train_score_col],
+                                        y=status_models[test_score_col],
+                                        mode="markers",
+                                        marker=dict(
+                                            size=16,  # 稍大一点以便边框可见
+                                            color="rgba(0,0,0,0)",  # 透明填充
+                                            symbol={
+                                                "baseline_mlp": "triangle-up",
+                                                "gat_selfloop": "square",
+                                                "gat_realedge": "circle",
+                                            }.get(category, "circle"),
+                                            line=dict(width=2, color=edge_color),
+                                        ),
+                                        name=f"{fitting_status} (折 {fold})",
+                                        customdata=[None, fold, None],
+                                        hoverinfo="text",
+                                        showlegend=False,
                                     )
+                                )
 
         # 标记最佳模型
         best_models = self.model_performance_df[
@@ -1664,10 +1642,6 @@ class AdaptiveGATEvaluator:
         ]
 
         for i, model in pd.DataFrame(best_models).iterrows():
-            try:
-                model_num = int(model["model_id"].split("_")[-1])
-            except (ValueError, IndexError):
-                model_num = 999
             fig.add_trace(
                 go.Scatter(
                     x=[model[train_score_col]],
@@ -1684,11 +1658,7 @@ class AdaptiveGATEvaluator:
                         line=dict(width=2, color="gold"),
                     ),
                     name="最佳模型",
-                    customdata=[
-                        category_names.get(model["model_category"], "未知"),
-                        model["fold_num"],
-                        model_num,
-                    ],
+                    customdata=[None, model["fold_num"], None],
                     hoverinfo="skip",
                     showlegend=False,
                 )
