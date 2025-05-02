@@ -660,6 +660,10 @@ class AdaptiveGATEvaluator:
         )
         params.append(f"折: {row['fold_num']}")
 
+        is_best_col = f"is_best_{row['metric_type']}"
+        if is_best_col in row and row[is_best_col]:
+            params.append(f"<b style='color:gold'>★ 最佳模型 ★</b>")
+
         # 添加评分信息
         if include_scores:
             for score_type in ["MAP", "MRR"]:
@@ -690,9 +694,7 @@ class AdaptiveGATEvaluator:
 
         return "<br>".join(params)
 
-    def _create_interactive_filter_buttons(
-        self, fig, folds, category_names, fig_title="交互式图表"
-    ):
+    def _create_interactive_filter_buttons(self, fig, folds, category_names):
         """
         为交互式图表创建过滤按钮及设置相关布局，使三个筛选器形成"与"逻辑关系
 
@@ -700,138 +702,52 @@ class AdaptiveGATEvaluator:
             fig: plotly图表对象
             folds: 折号列表
             category_names: 类别名称映射字典
-            fig_title: 图表标题前缀
 
         返回:
             配置好按钮和布局的图表对象
         """
-        # 提取所有trace的类别、折号和模型编号信息
-        trace_info = []
         model_nums = set()
 
         for i, trace in enumerate(fig.data):
-            category = ""
-            fold = ""
-            model_num = ""
-
-            # 提取类别和折信息
-            if hasattr(trace, "customdata") and len(trace.customdata) >= 2:
-                category = trace.customdata[0]
-                fold = trace.customdata[1]
-
             # 提取模型编号
-            if hasattr(trace, "name"):
-                model_name = trace.name
-                try:
-                    model_num = model_name.split("-")[-1].split()[0]
-                    model_nums.add(model_num)
-                except:
-                    pass
-
-            trace_info.append(
-                {"index": i, "category": category, "fold": fold, "model_num": model_num}
-            )
+            if hasattr(trace, "customdata"):
+                model_num = trace.customdata[2]
+                model_nums.add(model_num)
 
         # 创建模型类型按钮
         category_buttons = []
-        for category, category_name in category_names.items():
-            # 生成过滤条件 - 只显示匹配当前类别的trace
-            visibility = []
-            for info in trace_info:
-                is_visible = info["category"] == category
-                visibility.append(is_visible)
-
+        for _, category_name in category_names.items():
             category_buttons.append(
                 dict(
-                    method="update",
+                    method=None,  # 这里设置为None或空字符串
                     label=category_name,
-                    args=[
-                        {"visible": visibility},
-                        {"title": f"{category_name}模型的{fig_title}"},
-                    ],
+                    args=[{}, {}],  # 空参数
                 )
             )
 
         # 添加"显示全部模型类型"按钮
         category_buttons.append(
-            dict(
-                method="update",
-                label="全部模型类型",
-                args=[
-                    {"visible": [True] * len(trace_info)},
-                    {"title": f"所有模型类别的{fig_title}"},
-                ],
-            )
+            dict(method=None, label="全部模型类型", args=[{}, {}])  # 不执行任何操作
         )
 
         # 创建折按钮
         fold_buttons = []
         for fold in folds:
-            # 生成过滤条件 - 只显示匹配当前折的trace
-            visibility = []
-            for info in trace_info:
-                is_visible = info["fold"] == fold
-                visibility.append(is_visible)
-
-            fold_buttons.append(
-                dict(
-                    method="update",
-                    label=f"折 {fold}",
-                    args=[
-                        {"visible": visibility},
-                        {"title": f"折 {fold} 的{fig_title}"},
-                    ],
-                )
-            )
+            fold_buttons.append(dict(method=None, label=f"折 {fold}", args=[{}, {}]))
 
         # 添加"显示全部折"按钮
-        fold_buttons.append(
-            dict(
-                method="update",
-                label="全部折",
-                args=[
-                    {"visible": [True] * len(trace_info)},
-                    {"title": f"所有折的{fig_title}"},
-                ],
-            )
-        )
+        fold_buttons.append(dict(method=None, label="全部折", args=[{}, {}]))
 
         # 为每个唯一的模型编号创建一个按钮
-        model_nums_sorted = sorted(
-            [int(num) if num.isdigit() else 999 for num in model_nums]
-        )
+        model_nums_sorted = sorted(model_nums)
         model_nums_sorted = [str(num) for num in model_nums_sorted if num != 999]
 
         model_buttons = []
         for model_num in model_nums_sorted:
-            # 生成过滤条件 - 只显示匹配当前模型编号的trace
-            visibility = []
-            for info in trace_info:
-                is_visible = info["model_num"] == model_num
-                visibility.append(is_visible)
-
-            model_buttons.append(
-                dict(
-                    method="update",
-                    label=model_num,
-                    args=[
-                        {"visible": visibility},
-                        {"title": f"模型 {model_num} 的{fig_title}"},
-                    ],
-                )
-            )
+            model_buttons.append(dict(method=None, label=model_num, args=[{}, {}]))
 
         # 添加"显示全部模型"按钮
-        model_buttons.append(
-            dict(
-                method="update",
-                label="全部",
-                args=[
-                    {"visible": [True] * len(trace_info)},
-                    {"title": f"所有模型的{fig_title}"},
-                ],
-            )
-        )
+        model_buttons.append(dict(method=None, label="全部", args=[{}, {}]))
 
         # 更新布局添加所有按钮组
         updatemenus = [
@@ -915,18 +831,6 @@ class AdaptiveGATEvaluator:
             xanchor="left",
         )
 
-        # 添加分隔线和标题
-        fig.add_shape(
-            type="line",
-            x0=0,
-            y0=1.1,
-            x1=1,
-            y1=1.1,
-            line=dict(color="lightgray", width=1),
-            xref="paper",
-            yref="paper",
-        )
-
         # 设置图表尺寸和布局，确保绘图区域不变窄
         fig.update_layout(
             autosize=False,  # 禁用自动调整大小
@@ -938,7 +842,7 @@ class AdaptiveGATEvaluator:
 
         # 添加JavaScript用于"与"逻辑交互
         post_script = """
-        var gd = document.getElementById('plotly-html-element');
+        var gd = document.querySelectorAll('div.js-plotly-plot')[0];
         
         // 存储当前选择的状态
         var currentSelection = {
@@ -947,106 +851,199 @@ class AdaptiveGATEvaluator:
             model: "all"
         };
         
-        // 初始化所有trace的原始可见性状态
-        var originalVisibility = [];
-        for(var i = 0; i < gd.data.length; i++) {
-            originalVisibility.push(gd.data[i].visible === false ? false : true);
+        // 从Plotly对象中提取曲线信息
+        var traceInfo = extractTraceInfo(gd);
+        
+        // 提取按类别、折叠和模型编号分组的曲线索引
+        var categoryGroups = groupTracesByProperty(traceInfo, 'category');
+        var foldGroups = groupTracesByProperty(traceInfo, 'fold');
+        var modelGroups = groupTracesByProperty(traceInfo, 'modelNum');
+        
+        console.log("分类组数:", Object.keys(categoryGroups).length);
+        console.log("折叠组数:", Object.keys(foldGroups).length);
+        console.log("模型组数:", Object.keys(modelGroups).length);
+
+        // 监听菜单区域，使用事件委托处理点击
+        document.addEventListener('click', function(e) {
+            // 识别点击的是否为下拉菜单按钮区域
+            var menuButton = e.target.closest('.updatemenu-item-rect, .updatemenu-item-text');
+            if (menuButton) {
+                console.log("检测到菜单按钮区域被点击");
+                
+                // 识别是哪个下拉菜单
+                var filterType = identifyMenuType(menuButton);
+                console.log("识别到菜单类型:", filterType);
+                
+                // 添加延迟以确保下拉菜单已经展开
+                setTimeout(function() {
+                    // 为所有菜单项添加点击监听
+                    setupMenuItemListeners(filterType, currentSelection);
+                }, 100);
+            }
+        }, true);
+
+        // 从类名和位置识别菜单类型
+        function identifyMenuType(menuButton) {
+            // 尝试通过位置判断
+            var rect = menuButton.getBoundingClientRect();
+            var centerX = rect.left + rect.width / 2;
+            
+            // 根据菜单按钮的水平位置判断类型
+            var plotlyRect = gd.getBoundingClientRect();
+            var relativeX = (centerX - plotlyRect.left) / plotlyRect.width;
+            
+            if (relativeX < 0.3) return "category";
+            else if (relativeX < 0.4) return "fold";
+            else return "model";
         }
         
-        // 为每个下拉菜单添加事件监听器
-        gd.on('plotly_restyle', function(eventdata) {
-            var update = eventdata[0];
+        // 为菜单项设置点击监听
+        function setupMenuItemListeners(filterType, currentSelection) {
+            var menuItems = document.querySelectorAll('.updatemenu-dropdown-button');
+            console.log("找到菜单项:", menuItems.length, "个");
             
-            // 检测是否为按钮点击事件（通过检查visible属性被修改）
-            if(update.hasOwnProperty('visible')) {
-                // 从按钮标题推断出被点击的是哪个菜单
-                var relayout = eventdata[1];
-                if(relayout && relayout.length > 0) {
-                    var activeMenu = -1;
+            menuItems.forEach(function(item) {
+                // 避免重复添加监听器
+                if (item.dataset.hasListener) return;
+                
+                item.dataset.hasListener = "true";
+                item.addEventListener('click', function(e) {
+                    var itemText = this.querySelector('.updatemenu-item-text').textContent.trim();
+                    console.log("菜单项被点击:", itemText, "类型:", filterType);
                     
-                    // 尝试确定哪个菜单被点击了
-                    if(gd._fullLayout.updatemenus) {
-                        for(var i = 0; i < gd._fullLayout.updatemenus.length; i++) {
-                            var menu = gd._fullLayout.updatemenus[i];
-                            if(menu.active !== undefined && menu.active !== -1) {
-                                activeMenu = i;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    // 根据点击的菜单，更新当前状态
-                    if(activeMenu === 0) {
-                        // 更新类别选择
-                        if(gd._fullLayout.updatemenus[0].active === gd._fullLayout.updatemenus[0].buttons.length - 1) {
-                            currentSelection.category = "all";
-                        } else {
-                            var category = Object.keys(eventdata[0])[0];
-                            currentSelection.category = category;
-                        }
-                    } else if(activeMenu === 1) {
-                        // 更新折选择
-                        if(gd._fullLayout.updatemenus[1].active === gd._fullLayout.updatemenus[1].buttons.length - 1) {
+                    // 更新当前筛选状态
+                    if (filterType === "category") {
+                        currentSelection.category = itemText === "全部模型类型" ? "all" : itemText;
+                    } else if (filterType === "fold") {
+                        if (itemText === "全部折") {
                             currentSelection.fold = "all";
                         } else {
-                            var fold = Object.keys(eventdata[0])[0];
-                            currentSelection.fold = fold;
+                            // 从"折 0"中提取数字
+                            currentSelection.fold = itemText.replace("折 ", "");
                         }
-                    } else if(activeMenu === 2) {
-                        // 更新模型编号选择
-                        if(gd._fullLayout.updatemenus[2].active === gd._fullLayout.updatemenus[2].buttons.length - 1) {
-                            currentSelection.model = "all";
-                        } else {
-                            var model = Object.keys(eventdata[0])[0];
-                            currentSelection.model = model;
-                        }
+                    } else if (filterType === "model") {
+                        currentSelection.model = itemText === "全部" ? "all" : itemText;
                     }
                     
-                    // 应用组合筛选
-                    applyFilters();
-                }
-            }
-        });
-        
-        // 应用组合筛选逻辑
-        function applyFilters() {
-            var update = {visible: []};
-            var traces = [];
-            
+                    console.log("更新后的筛选状态:", currentSelection);
+                    
+                    // 应用组合筛选逻辑
+                    setTimeout(function() {
+                        applyCustomFilter(
+                            gd, 
+                            currentSelection, 
+                            traceInfo, 
+                            categoryGroups, 
+                            foldGroups, 
+                            modelGroups,
+                        );
+                    }, 100);
+                });
+            });
+        }
+    
+        // 从Plotly图表中提取曲线信息
+        function extractTraceInfo(gd) {
+            var traceInfo = [];
+
             for(var i = 0; i < gd.data.length; i++) {
                 var trace = gd.data[i];
-                traces.push(i);
-                
-                // 默认可见性
-                var isVisible = originalVisibility[i];
-                
-                if(isVisible && trace.customdata && trace.customdata.length >= 2) {
-                    var category = trace.customdata[0];
-                    var fold = trace.customdata[1];
-                    var modelNum = "";
-                    
-                    try {
-                        modelNum = trace.name.split("-")[-1].split()[0];
-                    } catch(e) {}
-                    
-                    // 应用"与"逻辑
-                    if(currentSelection.category !== "all" && category !== currentSelection.category) {
+                var category = "";
+                var fold = "";
+                var modelNum = "";
+
+                // 提取customdata
+                if(trace.customdata) {
+                    category = trace.customdata[0];
+                    fold = trace.customdata[1];
+                    modelNum = trace.customdata[2];
+                }
+
+                traceInfo.push({
+                    index: i,
+                    category: category,
+                    fold: fold,
+                    modelNum: modelNum
+                });
+            }
+
+            return traceInfo;
+        }
+
+        // 按属性对曲线进行分组
+        function groupTracesByProperty(traceInfo, property) {
+            var groups = {};
+
+            traceInfo.forEach(function(trace) {
+                var value = trace[property];
+                if (!groups[value]) {
+                    groups[value] = [];
+                }
+                groups[value].push(trace.index);
+            });
+
+            return groups;
+        }
+
+        // 应用自定义筛选逻辑
+        function applyCustomFilter(
+            gd, 
+            selection, 
+            traceInfo, 
+            categoryGroups, 
+            foldGroups, 
+            modelGroups,
+        ) {
+            console.log("应用筛选逻辑, 当前状态:", selection);
+
+            console.log(categoryGroups);
+            console.log(foldGroups);
+            console.log(modelGroups);
+
+            console.log(traceInfo);
+
+            var newVisibility = [];
+            var updateIndices = [];
+
+            // 对每条曲线应用筛选逻辑
+            for(var i = 0; i < traceInfo.length; i++) {
+                var trace = traceInfo[i];
+                var traceIdx = trace.index;
+                updateIndices.push(traceIdx);
+
+                // 默认继承原始可见性
+                var isVisible = true;
+
+                // 如果曲线原本可见,则应用筛选条件
+                if (isVisible) {
+                    if (selection.category !== "all" && 
+                        categoryGroups[selection.category] && 
+                        !categoryGroups[selection.category].includes(traceIdx)) {
                         isVisible = false;
                     }
-                    
-                    if(currentSelection.fold !== "all" && fold !== currentSelection.fold) {
+
+                    if (isVisible && selection.fold !== "all" && 
+                        foldGroups[selection.fold] && 
+                        !foldGroups[selection.fold].includes(traceIdx)) {
                         isVisible = false;
                     }
-                    
-                    if(currentSelection.model !== "all" && modelNum !== currentSelection.model) {
+
+                    if (isVisible && selection.model !== "all" && 
+                        modelGroups[selection.model] && 
+                        !modelGroups[selection.model].includes(traceIdx)) {
                         isVisible = false;
                     }
                 }
-                
-                update.visible.push(isVisible);
+
+                newVisibility.push(isVisible);
             }
-            
-            Plotly.restyle(gd, update, traces);
+
+            console.log("更新曲线可见性, 可见曲线数:", newVisibility.filter(Boolean).length);
+
+            // 使用Plotly.restyle更新可见性
+            Plotly.restyle(gd, {
+                visible: newVisibility
+            }, updateIndices);
         }
         """
 
@@ -1099,16 +1096,6 @@ class AdaptiveGATEvaluator:
             "gat_realedge": "dashdot",  # 点划线
         }
 
-        # 获取每个fold的最佳模型
-        best_models = {}
-        for fold in folds:
-            fold_best = nn_models[
-                (nn_models["fold_num"] == fold)
-                & (nn_models[f"is_best_{metric_type}"] == True)
-            ]
-            if not fold_best.empty:
-                best_models[fold] = fold_best.iloc[0]["model_id"]
-
         # 创建图表
         fig = make_subplots(
             rows=2,
@@ -1157,18 +1144,12 @@ class AdaptiveGATEvaluator:
                 # 结合基础模型信息和轮次特定信息
                 hover_text.append(f"{base_hover_text}<br><br>{epoch_info}")
 
-            # 创建图例标签 - 为最佳模型添加特殊标注
-            label = f"{category_names[category]}-{model_id.split('_')[-1]}"
-            if fold in best_models and best_models[fold] == model_id:
-                label += " (最佳)"
-
             # 添加分数曲线
             fig.add_trace(
                 go.Scatter(
                     x=epochs,
                     y=scores,
                     mode="lines+markers",
-                    name=label,
                     legendgroup=model_id,
                     marker=dict(size=4),  # 减小点的大小
                     line=dict(
@@ -1178,7 +1159,11 @@ class AdaptiveGATEvaluator:
                     ),
                     text=hover_text,
                     hoverinfo="text",
-                    customdata=[category, fold],
+                    customdata=[
+                        category_names[category],
+                        fold,
+                        int(model_id.split("_")[-1]),
+                    ],
                 ),
                 row=1,
                 col=1,
@@ -1191,7 +1176,6 @@ class AdaptiveGATEvaluator:
                         x=epochs,
                         y=losses,
                         mode="lines+markers",
-                        name=label,
                         legendgroup=model_id,
                         marker=dict(size=4),  # 减小点的大小
                         line=dict(
@@ -1202,7 +1186,11 @@ class AdaptiveGATEvaluator:
                         text=hover_text,
                         hoverinfo="text",
                         showlegend=False,  # 不在图例中显示，已在分数图中显示
-                        customdata=[category, fold],
+                        customdata=[
+                            category_names[category],
+                            fold,
+                            int(model_id.split("_")[-1]),
+                        ],
                     ),
                     row=2,
                     col=1,
@@ -1210,7 +1198,7 @@ class AdaptiveGATEvaluator:
 
         # 应用通用的交互按钮布局
         fig, post_script = self._create_interactive_filter_buttons(
-            fig, folds, category_names, "训练曲线"
+            fig, folds, category_names
         )
 
         # 设置x轴和y轴标签
@@ -1241,39 +1229,7 @@ class AdaptiveGATEvaluator:
             config=fig_config,
             include_plotlyjs="cdn",  # 使用CDN加载plotly.js以减小文件大小
             include_mathjax="cdn",
-            post_script=post_script
-            + """
-            var gd = document.getElementById('plotly-html-element');
-
-            // 图例双击事件处理
-            gd.on('plotly_legenddoubleclick', function(data) {
-                var traces = [];
-                var update = {visible: []};
-
-                // 获取当前所有trace的可见性状态
-                for(var i = 0; i < gd.data.length; i++) {
-                    traces.push(i);
-                    if(i === data.curveNumber) {
-                        // 保持当前点击的trace可见
-                        update.visible.push(true);
-                    } else {
-                        // 其他trace隐藏
-                        update.visible.push(false);
-                    }
-                }
-
-                // 更新可见性
-                Plotly.restyle(gd, update, traces);
-
-                // 重置按钮状态 - 设置为"全部"按钮
-                Plotly.relayout(gd, {
-                    'updatemenus[0].active': -1,
-                    'updatemenus[1].active': -1
-                });
-
-                return false;
-            });
-            """,
+            post_script=post_script,
         )
 
         return html_path
