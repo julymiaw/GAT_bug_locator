@@ -207,7 +207,7 @@ class AdaptiveGATEvaluator:
         return overall_summary
 
     def analyze_parameter_impact(self):
-        """分析不同参数对模型性能的影响"""
+        """按fold分组分析不同参数对模型性能的影响"""
         # 要分析的参数列表
         params_to_analyze = [
             "penalty",
@@ -232,6 +232,9 @@ class AdaptiveGATEvaluator:
             self.model_performance_df["model_category"] != "baseline_weights"
         ]
 
+        # 获取所有折号
+        folds = nn_models_df["fold_num"].unique()
+
         score_types = ["MAP", "MRR"]
         all_results = {"single_parameters": {}, "parameter_combinations": {}}
 
@@ -247,58 +250,77 @@ class AdaptiveGATEvaluator:
                 print(f"⚠ 警告: {score_type}分数列不存在，跳过分析")
                 continue
 
-            # 1. 单参数分析
+            # 1. 单参数分析（按fold分组）
             all_results["single_parameters"][score_type] = {}
+
             for param in params_to_analyze:
                 if param not in nn_models_df.columns:
                     print(f"⚠ 警告：参数 {param} 不在数据集列中，跳过分析")
                     continue
 
-                unique_values = nn_models_df[param].unique()
-                if len(unique_values) <= 1:
-                    continue
+                # 为每个fold创建单独的impact_data
+                fold_impact_data = {}
+                for fold in folds:
+                    # 筛选当前fold的模型
+                    fold_models = nn_models_df[nn_models_df["fold_num"] == fold]
 
-                # 计算每个参数值的平均性能
-                impact_data = []
+                    unique_values = fold_models[param].unique()
+                    if len(unique_values) <= 1:
+                        continue
 
-                for value in unique_values:
-                    if not pd.isna(value):
-                        # 精确匹配非NaN值
-                        subset = nn_models_df[nn_models_df[param] == value]
+                    # 计算每个参数值的平均性能
+                    impact_data = []
 
-                        if not subset.empty:
-                            impact_data.append(
-                                {
-                                    "param_value": value,
-                                    "count": len(subset),
-                                    "mean_train": subset[train_score_col].mean(),
-                                    "mean_test": subset[test_score_col].mean(),
-                                }
-                            )
+                    for value in unique_values:
+                        if not pd.isna(value):
+                            # 精确匹配非NaN值
+                            subset = fold_models[fold_models[param] == value]
 
-                # 特殊处理NaN值
-                nan_subset = nn_models_df[pd.isna(nn_models_df[param])]
-                if not nan_subset.empty:
-                    impact_data.append(
-                        {
-                            "param_value": np.nan,
-                            "count": len(nan_subset),
-                            "mean_train": nan_subset[train_score_col].mean(),
-                            "mean_test": nan_subset[test_score_col].mean(),
-                        }
-                    )
+                            if not subset.empty:
+                                impact_data.append(
+                                    {
+                                        "param_value": value,
+                                        "count": len(subset),
+                                        "mean_train": subset[train_score_col].mean(),
+                                        "mean_test": subset[test_score_col].mean(),
+                                        "fold": fold,  # 添加fold信息
+                                    }
+                                )
 
-                # 保存并绘制参数影响数据
-                if impact_data:
-                    all_results["single_parameters"][score_type][param] = impact_data
+                    # 特殊处理NaN值
+                    nan_subset = fold_models[pd.isna(fold_models[param])]
+                    if not nan_subset.empty:
+                        impact_data.append(
+                            {
+                                "param_value": np.nan,
+                                "count": len(nan_subset),
+                                "mean_train": nan_subset[train_score_col].mean(),
+                                "mean_test": nan_subset[test_score_col].mean(),
+                                "fold": fold,
+                            }
+                        )
+
+                    # 保存影响数据
+                    if impact_data:
+                        fold_impact_data[fold] = impact_data
+
+                # 合并所有fold的数据以保存总体结果
+                all_fold_data = []
+                for fold_data in fold_impact_data.values():
+                    all_fold_data.extend(fold_data)
+
+                if all_fold_data:
+                    all_results["single_parameters"][score_type][param] = all_fold_data
+                    # 绘制按fold分组的参数影响
                     self.plot_parameter_impact(
-                        param, impact_data, param_dir, score_type=score_type
+                        param, fold_impact_data, param_dir, score_type=score_type
                     )
                 else:
                     print(f"⚠ 警告：参数 {param} 没有有效数据可分析")
 
-            # 2. 参数组合分析
+            # 2. 参数组合分析（同样按fold分组）
             all_results["parameter_combinations"][score_type] = {}
+
             for param1, param2 in param_combinations:
                 if (
                     param1 not in nn_models_df.columns
@@ -309,46 +331,71 @@ class AdaptiveGATEvaluator:
                     )
                     continue
 
-                # 获取每个参数的唯一值
-                unique_values1 = [
-                    v for v in nn_models_df[param1].unique() if not pd.isna(v)
-                ]
-                unique_values2 = [
-                    v for v in nn_models_df[param2].unique() if not pd.isna(v)
-                ]
+                # 按fold分组进行组合分析
+                fold_combo_data = {}
 
-                if len(unique_values1) <= 1 and len(unique_values2) <= 1:
-                    continue
+                for fold in folds:
+                    # 筛选当前fold的模型
+                    fold_models = nn_models_df[nn_models_df["fold_num"] == fold]
 
-                # 为此组合创建数据
-                combo_data = []
-                for val1 in unique_values1:
-                    for val2 in unique_values2:
-                        # 找到具有此参数组合的模型
-                        combo_subset = nn_models_df[
-                            (nn_models_df[param1] == val1)
-                            & (nn_models_df[param2] == val2)
-                        ]
+                    # 获取每个参数的唯一值
+                    unique_values1 = [
+                        v for v in fold_models[param1].unique() if not pd.isna(v)
+                    ]
+                    unique_values2 = [
+                        v for v in fold_models[param2].unique() if not pd.isna(v)
+                    ]
 
-                        if not combo_subset.empty:
-                            combo_data.append(
-                                {
-                                    f"{param1}": val1,
-                                    f"{param2}": val2,
-                                    "combo_label": f"{val1}-{val2}",
-                                    "count": len(combo_subset),
-                                    "mean_train": combo_subset[train_score_col].mean(),
-                                    "mean_test": combo_subset[test_score_col].mean(),
-                                }
-                            )
+                    if len(unique_values1) <= 1 and len(unique_values2) <= 1:
+                        continue
 
-                if combo_data:
+                    # 为此组合创建数据
+                    combo_data = []
+                    for val1 in unique_values1:
+                        for val2 in unique_values2:
+                            # 找到具有此参数组合的模型
+                            combo_subset = fold_models[
+                                (fold_models[param1] == val1)
+                                & (fold_models[param2] == val2)
+                            ]
+
+                            if not combo_subset.empty:
+                                combo_data.append(
+                                    {
+                                        f"{param1}": val1,
+                                        f"{param2}": val2,
+                                        "combo_label": f"{val1}-{val2}",
+                                        "count": len(combo_subset),
+                                        "mean_train": combo_subset[
+                                            train_score_col
+                                        ].mean(),
+                                        "mean_test": combo_subset[
+                                            test_score_col
+                                        ].mean(),
+                                        "fold": fold,
+                                    }
+                                )
+
+                    if combo_data:
+                        fold_combo_data[fold] = combo_data
+
+                # 合并所有fold的数据以保存总体结果
+                all_fold_combo = []
+                for fold_data in fold_combo_data.values():
+                    all_fold_combo.extend(fold_data)
+
+                if all_fold_combo:
                     combo_key = f"{param1}_{param2}"
                     all_results["parameter_combinations"][score_type][
                         combo_key
-                    ] = combo_data
+                    ] = all_fold_combo
+                    # 绘制按fold分组的参数组合影响
                     self.plot_parameter_combination(
-                        param1, param2, combo_data, param_dir, score_type=score_type
+                        param1,
+                        param2,
+                        fold_combo_data,
+                        param_dir,
+                        score_type=score_type,
                     )
                 else:
                     print(f"⚠ 警告：参数组合 {param1}-{param2} 没有有效数据可分析")
@@ -362,103 +409,159 @@ class AdaptiveGATEvaluator:
         return all_results
 
     def plot_parameter_impact(
-        self, param: str, impact_data: List[Dict], output_dir: str, score_type="MAP"
+        self,
+        param: str,
+        fold_impact_data: Dict[int, List[Dict]],
+        output_dir: str,
+        score_type="MAP",
     ):
         """
-        绘制参数影响图表
+        绘制按fold分组的参数影响图表
 
         参数:
             param: 参数名称
-            impact_data: 影响数据列表
+            fold_impact_data: 按fold分组的影响数据字典
             output_dir: 输出目录
             score_type: 评分类型 (MAP或MRR)
         """
-        # 转换为DataFrame
-        impact_df = pd.DataFrame(impact_data)
-        impact_df["param_label"] = impact_df["param_value"].astype(str)
+        # 检查数据
+        if not fold_impact_data:
+            return
 
-        # 排序
-        impact_df = impact_df.sort_values(by="param_value")
-
-        # 绘制过拟合对比图
-        plt.figure(figsize=(12, 6))
-
-        x = np.arange(len(impact_df))
-        width = 0.35
-
-        # 训练和测试分数
-        plt.bar(
-            x - width / 2, impact_df["mean_train"], width, label=f"训练{score_type}"
+        # 创建多折对比子图
+        folds = list(fold_impact_data.keys())
+        fig, axs = plt.subplots(
+            len(folds), 1, figsize=(12, 5 * len(folds)), sharex=True
         )
-        plt.bar(x + width / 2, impact_df["mean_test"], width, label=f"测试{score_type}")
 
-        # 添加标签
-        plt.xlabel(param)
-        plt.ylabel(f"{score_type}得分")
-        plt.title(f"{param}参数对{score_type}训练和测试性能的对比")
-        plt.xticks(x, impact_df["param_label"])
-        plt.legend()
-        plt.grid(axis="y", linestyle="--", alpha=0.7)
+        # 如果只有一个fold，确保axs是列表
+        if len(folds) == 1:
+            axs = [axs]
+
+        # 遍历每个fold绘制子图
+        for i, fold in enumerate(folds):
+            impact_df = pd.DataFrame(fold_impact_data[fold])
+            impact_df["param_label"] = impact_df["param_value"].astype(str)
+            impact_df = impact_df.sort_values(by="param_value")
+
+            x = np.arange(len(impact_df))
+            width = 0.35
+
+            # 训练和测试分数
+            axs[i].bar(
+                x - width / 2,
+                impact_df["mean_train"],
+                width,
+                label=f"训练{score_type}",
+                color="skyblue",
+            )
+            axs[i].bar(
+                x + width / 2,
+                impact_df["mean_test"],
+                width,
+                label=f"测试{score_type}",
+                color="salmon",
+            )
+
+            # 添加标签
+            axs[i].set_ylabel(f"{score_type}得分")
+            axs[i].set_title(f"折 {fold}: {param}参数对{score_type}性能的影响")
+            axs[i].set_xticks(x)
+            axs[i].set_xticklabels(impact_df["param_label"])
+            axs[i].grid(axis="y", linestyle="--", alpha=0.7)
+            axs[i].legend()
+
+        # 共享的x轴标签
+        fig.text(0.5, 0.04, param, ha="center", fontsize=12)
+
         plt.tight_layout()
-        plt.savefig(
-            os.path.join(output_dir, f"{param}_{score_type}_train_test_compare.png")
-        )
+        plt.subplots_adjust(bottom=0.08)
+
+        # 保存图片
+        plt.savefig(os.path.join(output_dir, f"{param}_{score_type}.png"))
         plt.close()
 
     def plot_parameter_combination(
         self,
         param1: str,
         param2: str,
-        combo_data: List[Dict],
+        fold_combo_data: Dict[int, List[Dict]],
         output_dir: str,
         score_type="MAP",
     ):
         """
-        绘制参数组合的柱状图
+        绘制按fold分组的参数组合柱状图
 
         参数:
             param1: 第一个参数名称
             param2: 第二个参数名称
-            combo_data: 组合分析数据列表
+            fold_combo_data: 按fold分组的组合分析数据字典
             output_dir: 输出目录
             score_type: 评分类型 (MAP或MRR)
         """
-        if not combo_data:
+        if not fold_combo_data:
             return
 
-        # 将列表转换为DataFrame
-        combo_df = pd.DataFrame(combo_data)
-
-        # 创建组合标签
-        combo_df["combined_label"] = combo_df.apply(
-            lambda row: f"{row[param1]}-{row[param2]}", axis=1
+        # 创建多折对比子图
+        folds = list(fold_combo_data.keys())
+        fig, axs = plt.subplots(
+            len(folds), 1, figsize=(15, 6 * len(folds)), sharex=True
         )
 
-        # 按测试分数降序排序
-        combo_df = combo_df.sort_values(by="mean_test", ascending=False)
+        # 如果只有一个fold，确保axs是列表
+        if len(folds) == 1:
+            axs = [axs]
 
-        # 绘制柱状图
-        plt.figure(figsize=(15, 8))
+        # 遍历每个fold绘制子图
+        for i, fold in enumerate(folds):
+            combo_df = pd.DataFrame(fold_combo_data[fold])
+            combo_df["combined_label"] = combo_df.apply(
+                lambda row: f"{row[param1]}-{row[param2]}", axis=1
+            )
 
-        x = np.arange(len(combo_df))
-        width = 0.35
+            # 按测试分数降序排序
+            combo_df = combo_df.sort_values(by="mean_test", ascending=False)
 
-        # 训练和测试分数
-        plt.bar(x - width / 2, combo_df["mean_train"], width, label=f"训练{score_type}")
-        plt.bar(x + width / 2, combo_df["mean_test"], width, label=f"测试{score_type}")
+            x = np.arange(len(combo_df))
+            width = 0.35
 
-        # 添加标签和图例
-        plt.xlabel(f"{param1} - {param2} 组合")
-        plt.ylabel(f"{score_type}得分")
-        plt.title(f"{param1}和{param2}参数组合对{score_type}性能的影响")
-        plt.xticks(x, combo_df["combined_label"], rotation=45, ha="right")
-        plt.legend()
-        plt.grid(axis="y", linestyle="--", alpha=0.7)
+            # 绘制训练和测试分数
+            axs[i].bar(
+                x - width / 2,
+                combo_df["mean_train"],
+                width,
+                label=f"训练{score_type}",
+                color="skyblue",
+            )
+            axs[i].bar(
+                x + width / 2,
+                combo_df["mean_test"],
+                width,
+                label=f"测试{score_type}",
+                color="salmon",
+            )
+
+            # 添加标签
+            axs[i].set_ylabel(f"{score_type}得分")
+            axs[i].set_title(
+                f"折 {fold}: {param1}和{param2}参数组合对{score_type}性能的影响"
+            )
+            axs[i].set_xticks(x)
+            axs[i].set_xticklabels(combo_df["combined_label"], rotation=45, ha="right")
+            axs[i].grid(axis="y", linestyle="--", alpha=0.7)
+            axs[i].legend()
+
+        # 共享的x轴标签
+        fig.text(0.5, 0.02, f"{param1} - {param2} 组合", ha="center", fontsize=12)
+
         plt.tight_layout()
+        plt.subplots_adjust(bottom=0.1)
 
         # 保存图片
         plt.savefig(
-            os.path.join(output_dir, f"{param1}_{param2}_{score_type}_bar_chart.png")
+            os.path.join(
+                output_dir, f"{param1}_{param2}_{score_type}_by_fold_bar_chart.png"
+            )
         )
         plt.close()
 
