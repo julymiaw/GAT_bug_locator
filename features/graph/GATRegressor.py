@@ -438,9 +438,6 @@ class GATRegressor:
         data_list: List[Data] = []
 
         for bug_id in node_features.index.get_level_values(0).unique():
-            if bug_id not in node_features.index:
-                eprint(f"警告: bug ID {bug_id} 在节点数据索引中不存在，跳过")
-                continue
             # 获取该bug的节点特征
             bug_nodes = node_features.loc[bug_id]
 
@@ -470,20 +467,25 @@ class GATRegressor:
                 edge_index = torch.zeros((2, 0), dtype=torch.long)
                 edge_attr = torch.zeros((0, len(self.dependency_feature_columns)))
             else:
-                # 获取该bug的边信息
-                bug_edges = edge_features.loc[bug_id]
+                try:
+                    # 获取该bug的边信息
+                    bug_edges = edge_features.loc[bug_id]
 
-                # 使用真实边数据
-                source_indices = bug_edges["source"].map(file_to_idx).values
-                target_indices = bug_edges["target"].map(file_to_idx).values
+                    # 使用真实边数据
+                    source_indices = bug_edges["source"].map(file_to_idx).values
+                    target_indices = bug_edges["target"].map(file_to_idx).values
 
-                edge_index = torch.tensor(
-                    np.vstack([source_indices, target_indices]), dtype=torch.long
-                )
-                edge_attr = torch.tensor(
-                    bug_edges[self.dependency_feature_columns].values,
-                    dtype=torch.float,
-                )
+                    edge_index = torch.tensor(
+                        np.vstack([source_indices, target_indices]), dtype=torch.long
+                    )
+                    edge_attr = torch.tensor(
+                        bug_edges[self.dependency_feature_columns].values,
+                        dtype=torch.float,
+                    )
+                except KeyError:
+                    # 如果边特征获取失败，使用空边集
+                    edge_index = torch.zeros((2, 0), dtype=torch.long)
+                    edge_attr = torch.zeros((0, len(self.dependency_feature_columns)))
             # 创建数据对象
             data = Data(
                 x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, bug_id=bug_id
