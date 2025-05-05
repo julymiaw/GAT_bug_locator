@@ -478,14 +478,21 @@ class GATRegressor:
                     edge_index = torch.tensor(
                         np.vstack([source_indices, target_indices]), dtype=torch.long
                     )
+                    edge_attrs = []
+                    for col in self.dependency_feature_columns:
+                        if col in bug_edges.columns:
+                            edge_attrs.append(bug_edges[col].values)
+                        else:
+                            # 缺失列使用零填充
+                            edge_attrs.append(np.zeros(len(bug_edges)))
                     edge_attr = torch.tensor(
-                        bug_edges[self.dependency_feature_columns].values,
-                        dtype=torch.float,
+                        np.column_stack(edge_attrs), dtype=torch.float
                     )
                 except KeyError:
                     # 如果边特征获取失败，使用空边集
                     edge_index = torch.zeros((2, 0), dtype=torch.long)
                     edge_attr = torch.zeros((0, len(self.dependency_feature_columns)))
+
             # 创建数据对象
             data = Data(
                 x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, bug_id=bug_id
