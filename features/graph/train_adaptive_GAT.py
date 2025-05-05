@@ -58,11 +58,12 @@ class Adaptive_Process(object):
         - 使用joblib并行化权重计算和模型评估过程
     """
 
-    def __init__(self, metric_type="MRR"):
+    def __init__(self, file_prefix, metric_type="MRR"):
         """
         初始化方法，配置所有可用算法组件
 
         参数：
+            file_prefix: 数据集前缀
             metric_type: 使用的评估指标类型，可选值:
                 "MAP": 平均精确率（Mean Average Precision）
                 "MRR": 平均倒数排名（Mean Reciprocal Rank）
@@ -79,7 +80,7 @@ class Adaptive_Process(object):
 
         # 回归模型集合
         self.reg_models: List[GATRegressor] = []
-        self.reg_models.extend(get_skmodels(self.metric_type))
+        self.reg_models.extend(get_skmodels(file_prefix, self.metric_type))
 
         # 评分方法（标准评分）
         self.score_method = normal_score
@@ -484,9 +485,9 @@ class Adaptive_Process(object):
     # ---------------------- 辅助函数 ----------------------
 
 
-def get_skmodels(metric_type="MRR"):
+def get_skmodels(file_prefix, metric_type="MRR"):
     """
-    根据指定的模型类型创建模型列表
+    根据指定的模型类型和数据集前缀创建模型列表
 
     参数：
         metric_type: 评估指标类型，默认为"MRR"
@@ -494,28 +495,56 @@ def get_skmodels(metric_type="MRR"):
     返回：
         GATRegressor模型列表
     """
-    # 数据集大小不同，最优的超参数可能不同
+    # 根据不同数据集选择最优超参数
+    if file_prefix == "aspectj":
+        # Aspectj数据集
+        dropout_rates = [0.1]
+        use_self_loops_modes = [False, True]
+        training_strategies = [(0.8, 2), (0.85, 2), (0.9, 1)]
+        head_dim_configs = [(1, 32), (2, 32), (1, 64), (None, 64)]
 
-    # Aspectj数据集
-    # dropout_rates = [0.2]  # 小型数据集 0.1-0.3，大型数据集 0.3-0.5
-    # use_self_loops_modes = [False, True]
+    elif file_prefix == "tomcat":
+        # Tomcat数据集
+        dropout_rates = [0.4]
+        use_self_loops_modes = [False, True]
+        training_strategies = [(0.5, 3), (0.7, 3), (0.8, 3)]
+        head_dim_configs = [(1, 32), (1, 64), (None, 64)]
 
-    # training_strategies = [(0.8, 5), (0.9, 3)]
-    # head_dim_configs = [(1, 32), (2, 32), (1, 64), (None, 64)]
+    elif file_prefix == "swt":
+        # SWT数据集
+        dropout_rates = [0.1]
+        use_self_loops_modes = [False, True]
+        training_strategies = [(0.95, 2), (0.8, 2), (0.8, 1)]
+        head_dim_configs = [(2, 64), (None, 64)]
 
-    # Tomcat数据集
-    dropout_rates = [0.4]  # 小型数据集 0.1-0.3，大型数据集 0.3-0.5
-    use_self_loops_modes = [False, True]
+    elif file_prefix == "jdt":
+        # JDT数据集
+        dropout_rates = [0.2]
+        use_self_loops_modes = [False, True]
+        training_strategies = [(0.7, 2), (0.8, 2), (0.9, 1)]
+        head_dim_configs = [(2, 64), (3, 64), (None, 64)]
 
-    training_strategies = [(0.5, 3), (0.7, 3), (0.8, 5)]
-    head_dim_configs = [(1, 32), (1, 64), (None, 64)]
+    elif file_prefix == "eclipse_platform_ui":
+        # Eclipse Platform UI数据集
+        dropout_rates = [0.1]
+        use_self_loops_modes = [False, True]
+        training_strategies = [(0.85, 2), (0.8, 2), (0.75, 1)]
+        head_dim_configs = [(1, 64), (2, 64), (None, 64)]
 
-    # SWT数据集
-    # dropout_rates = [0.1, 0.2]
-    # use_self_loops_modes = [False, True]
+    elif file_prefix == "birt":
+        # BIRT数据集
+        dropout_rates = [0.1]
+        use_self_loops_modes = [False, True]
+        training_strategies = [(0.85, 2), (0.8, 2), (0.75, 1)]
+        head_dim_configs = [(1, 64), (2, 64), (None, 64)]
 
-    # training_strategies = [(0.95, 3), (0.9, 5), (0.85, 7)]
-    # head_dim_configs = [(2, 64), (2, 128), (3, 64), (4, 64), (None, 128)]
+    else:
+        # 默认参数配置（未识别的数据集）
+        eprint(f"警告: 未识别的数据集前缀 '{file_prefix}'，使用默认配置")
+        dropout_rates = [0.1]
+        use_self_loops_modes = [False, True]
+        training_strategies = [(0.8, 2), (0.9, 1)]
+        head_dim_configs = [(2, 64), (None, 64)]
 
     models = [
         GATRegressor(
@@ -536,11 +565,10 @@ def get_skmodels(metric_type="MRR"):
             training_strategies,
         )
         if not (h is None and loop is True)  # MLP模式下不使用自环
-        # and not (p is None and a != alpha_values[0])  # 无正则化时仅使用一个alpha值
     ]
 
-    # 输出模型数量信息
-    eprint(f"创建了 {len(models)} 个模型")
+    # 输出数据集和模型信息
+    eprint(f"数据集: {file_prefix}, 创建了 {len(models)} 个模型")
 
     return models
 
@@ -657,7 +685,7 @@ def main():
         fold_dependency_training,
     ) = load(f"../joblib_memmap_{file_prefix}_graph/data_memmap", mmap_mode="r")
 
-    ptemplate = Adaptive_Process(metric_type=args.metric)
+    ptemplate = Adaptive_Process(file_prefix=file_prefix, metric_type=args.metric)
 
     result = process(
         ptemplate,
