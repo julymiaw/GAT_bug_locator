@@ -317,86 +317,405 @@ python evaluator.py {log_dir}
 
 ## 模型训练与评估结果
 
-### AspectJ数据集
+我们的模型支持两种评估指标作为优化目标：
 
-1. 原始模型(SGDRegressor)结果
+- **MAP** (Mean Average Precision, 平均精确率)：关注排序结果整体质量
+- **MRR** (Mean Reciprocal Rank, 平均倒数排名)：更关注第一个相关结果的位置
 
-    | 属性        | 分数   |     | 属性        | 分数   |
-    | ----------- | ------ | --- | ----------- | ------ |
-    | Accuracy@1  | 0.1842 |     | Accuracy@11 | 0.6447 |
-    | Accuracy@2  | 0.2895 |     | Accuracy@12 | 0.6579 |
-    | Accuracy@3  | 0.3684 |     | Accuracy@13 | 0.6579 |
-    | Accuracy@4  | 0.4079 |     | Accuracy@14 | 0.6711 |
-    | Accuracy@5  | 0.4605 |     | Accuracy@15 | 0.6711 |
-    | Accuracy@6  | 0.5000 |     | Accuracy@16 | 0.6711 |
-    | Accuracy@7  | 0.5132 |     | Accuracy@17 | 0.6711 |
-    | Accuracy@8  | 0.5921 |     | Accuracy@18 | 0.6711 |
-    | Accuracy@9  | 0.6447 |     | Accuracy@19 | 0.6842 |
-    | Accuracy@10 | 0.6447 |     | Accuracy@20 | 0.7105 |
-    | MAP         | 0.2665 |     | MRR         | 0.3175 |
+以下结果分别展示了针对不同优化目标的模型性能。
 
-2. GAT模型结果
+### Aspectj 数据集
 
-    | 属性        | 分数   |     | 属性        | 分数   |
-    | ----------- | ------ | --- | ----------- | ------ |
-    | Accuracy@1  | 0.2500 |     | Accuracy@11 | 0.6184 |
-    | Accuracy@2  | 0.3421 |     | Accuracy@12 | 0.6316 |
-    | Accuracy@3  | 0.3684 |     | Accuracy@13 | 0.6447 |
-    | Accuracy@4  | 0.4211 |     | Accuracy@14 | 0.6579 |
-    | Accuracy@5  | 0.4737 |     | Accuracy@15 | 0.6711 |
-    | Accuracy@6  | 0.4868 |     | Accuracy@16 | 0.6842 |
-    | Accuracy@7  | 0.5263 |     | Accuracy@17 | 0.6974 |
-    | Accuracy@8  | 0.5395 |     | Accuracy@18 | 0.6974 |
-    | Accuracy@9  | 0.5526 |     | Accuracy@19 | 0.6974 |
-    | Accuracy@10 | 0.6053 |     | Accuracy@20 | 0.7105 |
-    | MAP         | 0.3129 |     | MRR         | 0.3593 |
+#### 基准模型 (SGDRegressor)
 
-3. 模型性能对比分析
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.1842 |     | Accuracy@11 | 0.6447 |
+| Accuracy@2  | 0.2895 |     | Accuracy@12 | 0.6579 |
+| Accuracy@3  | 0.3684 |     | Accuracy@13 | 0.6579 |
+| Accuracy@4  | 0.4079 |     | Accuracy@14 | 0.6711 |
+| Accuracy@5  | 0.4605 |     | Accuracy@15 | 0.6711 |
+| Accuracy@6  | 0.5000 |     | Accuracy@16 | 0.6711 |
+| Accuracy@7  | 0.5132 |     | Accuracy@17 | 0.6711 |
+| Accuracy@8  | 0.5921 |     | Accuracy@18 | 0.6711 |
+| Accuracy@9  | 0.6447 |     | Accuracy@19 | 0.6842 |
+| Accuracy@10 | 0.6447 |     | Accuracy@20 | 0.7105 |
+| MAP         | 0.2665 |     | MRR         | 0.3175 |
 
-    | 模型         | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
-    | :----------- | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
-    | SGDRegressor | 0.2665 | 0.3175 | 0.1842     | 0.4605     | 0.6447      | 0.7105      |
-    | GAT模型      | 0.3129 | 0.3593 | 0.2500     | 0.4737     | 0.6053      | 0.7105      |
-    | 提升百分比   | 17.4%  | 13.2%  | 35.7%      | 2.9%       | -6.1%       | 0.0%        |
+#### MAP优化的GAT模型
 
-### Tomcat数据集
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.2368 |     | Accuracy@11 | 0.5921 |
+| Accuracy@2  | 0.3158 |     | Accuracy@12 | 0.6184 |
+| Accuracy@3  | 0.3816 |     | Accuracy@13 | 0.6711 |
+| Accuracy@4  | 0.4079 |     | Accuracy@14 | 0.6842 |
+| Accuracy@5  | 0.4342 |     | Accuracy@15 | 0.7105 |
+| Accuracy@6  | 0.4474 |     | Accuracy@16 | 0.7105 |
+| Accuracy@7  | 0.4474 |     | Accuracy@17 | 0.7105 |
+| Accuracy@8  | 0.4737 |     | Accuracy@18 | 0.7368 |
+| Accuracy@9  | 0.5395 |     | Accuracy@19 | 0.7368 |
+| Accuracy@10 | 0.5658 |     | Accuracy@20 | 0.7368 |
+| MAP         | 0.3011 |     | MRR         | 0.3436 |
 
-1. 原始模型(SGDRegressor)结果
+#### 性能对比分析 - MAP优化
 
-    | 属性        | 分数   |     | 属性        | 分数   |
-    | ----------- | ------ | --- | ----------- | ------ |
-    | Accuracy@1  | 0.4294 |     | Accuracy@11 | 0.7101 |
-    | Accuracy@2  | 0.5266 |     | Accuracy@12 | 0.7174 |
-    | Accuracy@3  | 0.5780 |     | Accuracy@13 | 0.7229 |
-    | Accuracy@4  | 0.6092 |     | Accuracy@14 | 0.7303 |
-    | Accuracy@5  | 0.6294 |     | Accuracy@15 | 0.7358 |
-    | Accuracy@6  | 0.6514 |     | Accuracy@16 | 0.7376 |
-    | Accuracy@7  | 0.6679 |     | Accuracy@17 | 0.7431 |
-    | Accuracy@8  | 0.6807 |     | Accuracy@18 | 0.7450 |
-    | Accuracy@9  | 0.6954 |     | Accuracy@19 | 0.7486 |
-    | Accuracy@10 | 0.7064 |     | Accuracy@20 | 0.7523 |
-    | MAP         | 0.5275 |     | MRR         | 0.5232 |
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.2665 | 0.3175 | 0.1842     | 0.4605     | 0.6447      | 0.7105      |
+| GAT模型 (MAP) | 0.3011 | 0.3436 | 0.2368     | 0.4342     | 0.5658      | 0.7368      |
+| 提升百分比    | 13.0%  | 8.2%   | 28.6%      | -5.7%      | -12.2%      | 3.7%        |
 
-2. GAT模型结果
+#### MRR优化的GAT模型
 
-    | 属性        | 分数   |     | 属性        | 分数   |
-    | ----------- | ------ | --- | ----------- | ------ |
-    | Accuracy@1  | 0.4440 |     | Accuracy@11 | 0.7119 |
-    | Accuracy@2  | 0.5284 |     | Accuracy@12 | 0.7248 |
-    | Accuracy@3  | 0.5908 |     | Accuracy@13 | 0.7284 |
-    | Accuracy@4  | 0.6183 |     | Accuracy@14 | 0.7339 |
-    | Accuracy@5  | 0.6440 |     | Accuracy@15 | 0.7376 |
-    | Accuracy@6  | 0.6624 |     | Accuracy@16 | 0.7394 |
-    | Accuracy@7  | 0.6734 |     | Accuracy@17 | 0.7450 |
-    | Accuracy@8  | 0.6844 |     | Accuracy@18 | 0.7486 |
-    | Accuracy@9  | 0.6917 |     | Accuracy@19 | 0.7486 |
-    | Accuracy@10 | 0.7009 |     | Accuracy@20 | 0.7541 |
-    | MAP         | 0.5411 |     | MRR         | 0.5333 |
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.2632 |     | Accuracy@11 | 0.5789 |
+| Accuracy@2  | 0.3289 |     | Accuracy@12 | 0.6053 |
+| Accuracy@3  | 0.3553 |     | Accuracy@13 | 0.6184 |
+| Accuracy@4  | 0.3947 |     | Accuracy@14 | 0.6842 |
+| Accuracy@5  | 0.4474 |     | Accuracy@15 | 0.7368 |
+| Accuracy@6  | 0.4474 |     | Accuracy@16 | 0.7368 |
+| Accuracy@7  | 0.4868 |     | Accuracy@17 | 0.7368 |
+| Accuracy@8  | 0.5263 |     | Accuracy@18 | 0.7368 |
+| Accuracy@9  | 0.5395 |     | Accuracy@19 | 0.7368 |
+| Accuracy@10 | 0.5658 |     | Accuracy@20 | 0.7368 |
+| MAP         | 0.3137 |     | MRR         | 0.3584 |
 
-3. 模型性能对比分析
+#### 性能对比分析 - MRR优化
 
-    | 模型         | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
-    | :----------- | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
-    | SGDRegressor | 0.5275 | 0.5232 | 0.4294     | 0.6294     | 0.7064      | 0.7523      |
-    | GAT模型      | 0.5411 | 0.5333 | 0.4440     | 0.6440     | 0.7009      | 0.7541      |
-    | 提升百分比   | 2.6%   | 1.9%   | 3.4%       | 2.3%       | -0.8%       | 0.2%        |
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.2665 | 0.3175 | 0.1842     | 0.4605     | 0.6447      | 0.7105      |
+| GAT模型 (MRR) | 0.3137 | 0.3584 | 0.2632     | 0.4474     | 0.5658      | 0.7368      |
+| 提升百分比    | 17.7%  | 12.9%  | 42.9%      | -2.9%      | -12.2%      | 3.7%        |
+
+### Tomcat 数据集
+
+#### 基准模型 (SGDRegressor)
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.4294 |     | Accuracy@11 | 0.7101 |
+| Accuracy@2  | 0.5266 |     | Accuracy@12 | 0.7174 |
+| Accuracy@3  | 0.5780 |     | Accuracy@13 | 0.7229 |
+| Accuracy@4  | 0.6092 |     | Accuracy@14 | 0.7303 |
+| Accuracy@5  | 0.6294 |     | Accuracy@15 | 0.7358 |
+| Accuracy@6  | 0.6514 |     | Accuracy@16 | 0.7376 |
+| Accuracy@7  | 0.6679 |     | Accuracy@17 | 0.7431 |
+| Accuracy@8  | 0.6807 |     | Accuracy@18 | 0.7450 |
+| Accuracy@9  | 0.6954 |     | Accuracy@19 | 0.7486 |
+| Accuracy@10 | 0.7064 |     | Accuracy@20 | 0.7523 |
+| MAP         | 0.5275 |     | MRR         | 0.5232 |
+
+#### MAP优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.4440 |     | Accuracy@11 | 0.7119 |
+| Accuracy@2  | 0.5284 |     | Accuracy@12 | 0.7248 |
+| Accuracy@3  | 0.5908 |     | Accuracy@13 | 0.7284 |
+| Accuracy@4  | 0.6183 |     | Accuracy@14 | 0.7339 |
+| Accuracy@5  | 0.6440 |     | Accuracy@15 | 0.7376 |
+| Accuracy@6  | 0.6624 |     | Accuracy@16 | 0.7394 |
+| Accuracy@7  | 0.6734 |     | Accuracy@17 | 0.7450 |
+| Accuracy@8  | 0.6844 |     | Accuracy@18 | 0.7486 |
+| Accuracy@9  | 0.6917 |     | Accuracy@19 | 0.7486 |
+| Accuracy@10 | 0.7009 |     | Accuracy@20 | 0.7541 |
+| MAP         | 0.5411 |     | MRR         | 0.5333 |
+
+#### 性能对比分析 - MAP优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.5275 | 0.5232 | 0.4294     | 0.6294     | 0.7064      | 0.7523      |
+| GAT模型 (MAP) | 0.5411 | 0.5333 | 0.4440     | 0.6440     | 0.7009      | 0.7541      |
+| 提升百分比    | 2.6%   | 1.9%   | 3.4%       | 2.3%       | -0.8%       | 0.2%        |
+
+#### MRR优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.4312 |     | Accuracy@11 | 0.7174 |
+| Accuracy@2  | 0.5303 |     | Accuracy@12 | 0.7211 |
+| Accuracy@3  | 0.5945 |     | Accuracy@13 | 0.7303 |
+| Accuracy@4  | 0.6330 |     | Accuracy@14 | 0.7321 |
+| Accuracy@5  | 0.6587 |     | Accuracy@15 | 0.7339 |
+| Accuracy@6  | 0.6734 |     | Accuracy@16 | 0.7413 |
+| Accuracy@7  | 0.6844 |     | Accuracy@17 | 0.7468 |
+| Accuracy@8  | 0.6954 |     | Accuracy@18 | 0.7523 |
+| Accuracy@9  | 0.6991 |     | Accuracy@19 | 0.7578 |
+| Accuracy@10 | 0.7101 |     | Accuracy@20 | 0.7633 |
+| MAP         | 0.5365 |     | MRR         | 0.5297 |
+
+#### 性能对比分析 - MRR优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.5275 | 0.5232 | 0.4294     | 0.6294     | 0.7064      | 0.7523      |
+| GAT模型 (MRR) | 0.5365 | 0.5297 | 0.4312     | 0.6587     | 0.7101      | 0.7633      |
+| 提升百分比    | 1.7%   | 1.2%   | 0.4%       | 4.7%       | 0.5%        | 1.5%        |
+
+### Swt 数据集
+
+#### 基准模型 (SGDRegressor)
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.3051 |     | Accuracy@11 | 0.5051 |
+| Accuracy@2  | 0.3730 |     | Accuracy@12 | 0.5106 |
+| Accuracy@3  | 0.4117 |     | Accuracy@13 | 0.5141 |
+| Accuracy@4  | 0.4348 |     | Accuracy@14 | 0.5169 |
+| Accuracy@5  | 0.4537 |     | Accuracy@15 | 0.5202 |
+| Accuracy@6  | 0.4677 |     | Accuracy@16 | 0.5238 |
+| Accuracy@7  | 0.4757 |     | Accuracy@17 | 0.5279 |
+| Accuracy@8  | 0.4842 |     | Accuracy@18 | 0.5314 |
+| Accuracy@9  | 0.4908 |     | Accuracy@19 | 0.5350 |
+| Accuracy@10 | 0.4988 |     | Accuracy@20 | 0.5369 |
+| MAP         | 0.5540 |     | MRR         | 0.3715 |
+
+#### MAP优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.3117 |     | Accuracy@11 | 0.5166 |
+| Accuracy@2  | 0.3851 |     | Accuracy@12 | 0.5210 |
+| Accuracy@3  | 0.4224 |     | Accuracy@13 | 0.5249 |
+| Accuracy@4  | 0.4469 |     | Accuracy@14 | 0.5293 |
+| Accuracy@5  | 0.4642 |     | Accuracy@15 | 0.5314 |
+| Accuracy@6  | 0.4762 |     | Accuracy@16 | 0.5367 |
+| Accuracy@7  | 0.4872 |     | Accuracy@17 | 0.5402 |
+| Accuracy@8  | 0.4960 |     | Accuracy@18 | 0.5424 |
+| Accuracy@9  | 0.5034 |     | Accuracy@19 | 0.5441 |
+| Accuracy@10 | 0.5106 |     | Accuracy@20 | 0.5463 |
+| MAP         | 0.5699 |     | MRR         | 0.3803 |
+
+#### 性能对比分析 - MAP优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.5540 | 0.3715 | 0.3051     | 0.4537     | 0.4988      | 0.5369      |
+| GAT模型 (MAP) | 0.5699 | 0.3803 | 0.3117     | 0.4642     | 0.5106      | 0.5463      |
+| 提升百分比    | 2.9%   | 2.4%   | 2.2%       | 2.3%       | 2.4%        | 1.7%        |
+
+#### MRR优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.2958 |     | Accuracy@11 | 0.5188 |
+| Accuracy@2  | 0.3757 |     | Accuracy@12 | 0.5229 |
+| Accuracy@3  | 0.4172 |     | Accuracy@13 | 0.5273 |
+| Accuracy@4  | 0.4400 |     | Accuracy@14 | 0.5323 |
+| Accuracy@5  | 0.4592 |     | Accuracy@15 | 0.5358 |
+| Accuracy@6  | 0.4757 |     | Accuracy@16 | 0.5386 |
+| Accuracy@7  | 0.4856 |     | Accuracy@17 | 0.5422 |
+| Accuracy@8  | 0.4966 |     | Accuracy@18 | 0.5446 |
+| Accuracy@9  | 0.5059 |     | Accuracy@19 | 0.5463 |
+| Accuracy@10 | 0.5117 |     | Accuracy@20 | 0.5496 |
+| MAP         | 0.5562 |     | MRR         | 0.3700 |
+
+#### 性能对比分析 - MRR优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.5540 | 0.3715 | 0.3051     | 0.4537     | 0.4988      | 0.5369      |
+| GAT模型 (MRR) | 0.5562 | 0.3700 | 0.2958     | 0.4592     | 0.5117      | 0.5496      |
+| 提升百分比    | 0.4%   | -0.4%  | -3.1%      | 1.2%       | 2.6%        | 2.4%        |
+
+### Birt 数据集
+
+#### 基准模型 (SGDRegressor)
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.1416 |     | Accuracy@11 | 0.4145 |
+| Accuracy@2  | 0.2048 |     | Accuracy@12 | 0.4244 |
+| Accuracy@3  | 0.2498 |     | Accuracy@13 | 0.4340 |
+| Accuracy@4  | 0.2844 |     | Accuracy@14 | 0.4419 |
+| Accuracy@5  | 0.3096 |     | Accuracy@15 | 0.4521 |
+| Accuracy@6  | 0.3308 |     | Accuracy@16 | 0.4617 |
+| Accuracy@7  | 0.3536 |     | Accuracy@17 | 0.4697 |
+| Accuracy@8  | 0.3717 |     | Accuracy@18 | 0.4798 |
+| Accuracy@9  | 0.3873 |     | Accuracy@19 | 0.4894 |
+| Accuracy@10 | 0.4002 |     | Accuracy@20 | 0.4938 |
+| MAP         | 0.1736 |     | MRR         | 0.2272 |
+
+#### MAP优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.1452 |     | Accuracy@11 | 0.4096 |
+| Accuracy@2  | 0.2108 |     | Accuracy@12 | 0.4197 |
+| Accuracy@3  | 0.2545 |     | Accuracy@13 | 0.4285 |
+| Accuracy@4  | 0.2863 |     | Accuracy@14 | 0.4378 |
+| Accuracy@5  | 0.3129 |     | Accuracy@15 | 0.4469 |
+| Accuracy@6  | 0.3313 |     | Accuracy@16 | 0.4546 |
+| Accuracy@7  | 0.3511 |     | Accuracy@17 | 0.4645 |
+| Accuracy@8  | 0.3689 |     | Accuracy@18 | 0.4730 |
+| Accuracy@9  | 0.3818 |     | Accuracy@19 | 0.4826 |
+| Accuracy@10 | 0.3986 |     | Accuracy@20 | 0.4927 |
+| MAP         | 0.1769 |     | MRR         | 0.2299 |
+
+#### 性能对比分析 - MAP优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.1736 | 0.2272 | 0.1416     | 0.3096     | 0.4002      | 0.4938      |
+| GAT模型 (MAP) | 0.1769 | 0.2299 | 0.1452     | 0.3129     | 0.3986      | 0.4927      |
+| 提升百分比    | 1.9%   | 1.2%   | 2.5%       | 1.1%       | -0.4%       | -0.2%       |
+
+#### MRR优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.1455 |     | Accuracy@11 | 0.4071 |
+| Accuracy@2  | 0.2092 |     | Accuracy@12 | 0.4214 |
+| Accuracy@3  | 0.2479 |     | Accuracy@13 | 0.4304 |
+| Accuracy@4  | 0.2847 |     | Accuracy@14 | 0.4425 |
+| Accuracy@5  | 0.3083 |     | Accuracy@15 | 0.4516 |
+| Accuracy@6  | 0.3330 |     | Accuracy@16 | 0.4634 |
+| Accuracy@7  | 0.3494 |     | Accuracy@17 | 0.4710 |
+| Accuracy@8  | 0.3656 |     | Accuracy@18 | 0.4798 |
+| Accuracy@9  | 0.3785 |     | Accuracy@19 | 0.4897 |
+| Accuracy@10 | 0.3950 |     | Accuracy@20 | 0.4944 |
+| MAP         | 0.1749 |     | MRR         | 0.2290 |
+
+#### 性能对比分析 - MRR优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.1736 | 0.2272 | 0.1416     | 0.3096     | 0.4002      | 0.4938      |
+| GAT模型 (MRR) | 0.1749 | 0.2290 | 0.1455     | 0.3083     | 0.3950      | 0.4944      |
+| 提升百分比    | 0.8%   | 0.8%   | 2.7%       | -0.4%      | -1.3%       | 0.1%        |
+
+### Jdt 数据集
+
+#### 基准模型 (SGDRegressor)
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.3200 |     | Accuracy@11 | 0.6663 |
+| Accuracy@2  | 0.4292 |     | Accuracy@12 | 0.6751 |
+| Accuracy@3  | 0.4946 |     | Accuracy@13 | 0.6847 |
+| Accuracy@4  | 0.5360 |     | Accuracy@14 | 0.6911 |
+| Accuracy@5  | 0.5678 |     | Accuracy@15 | 0.6986 |
+| Accuracy@6  | 0.5917 |     | Accuracy@16 | 0.7063 |
+| Accuracy@7  | 0.6137 |     | Accuracy@17 | 0.7130 |
+| Accuracy@8  | 0.6278 |     | Accuracy@18 | 0.7177 |
+| Accuracy@9  | 0.6423 |     | Accuracy@19 | 0.7230 |
+| Accuracy@10 | 0.6548 |     | Accuracy@20 | 0.7289 |
+| MAP         | 0.3973 |     | MRR         | 0.4333 |
+
+#### MAP优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.2880 |     | Accuracy@11 | 0.6523 |
+| Accuracy@2  | 0.3986 |     | Accuracy@12 | 0.6645 |
+| Accuracy@3  | 0.4654 |     | Accuracy@13 | 0.6739 |
+| Accuracy@4  | 0.5083 |     | Accuracy@14 | 0.6826 |
+| Accuracy@5  | 0.5410 |     | Accuracy@15 | 0.6904 |
+| Accuracy@6  | 0.5675 |     | Accuracy@16 | 0.6984 |
+| Accuracy@7  | 0.5927 |     | Accuracy@17 | 0.7038 |
+| Accuracy@8  | 0.6106 |     | Accuracy@18 | 0.7106 |
+| Accuracy@9  | 0.6245 |     | Accuracy@19 | 0.7167 |
+| Accuracy@10 | 0.6391 |     | Accuracy@20 | 0.7202 |
+| MAP         | 0.3720 |     | MRR         | 0.4055 |
+
+#### 性能对比分析 - MAP优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.3973 | 0.4333 | 0.3200     | 0.5678     | 0.6548      | 0.7289      |
+| GAT模型 (MAP) | 0.3720 | 0.4055 | 0.2880     | 0.5410     | 0.6391      | 0.7202      |
+| 提升百分比    | -6.4%  | -6.4%  | -10.0%     | -4.7%      | -2.4%       | -1.2%       |
+
+#### MRR优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.2861 |     | Accuracy@11 | 0.6501 |
+| Accuracy@2  | 0.3969 |     | Accuracy@12 | 0.6597 |
+| Accuracy@3  | 0.4609 |     | Accuracy@13 | 0.6697 |
+| Accuracy@4  | 0.5047 |     | Accuracy@14 | 0.6772 |
+| Accuracy@5  | 0.5381 |     | Accuracy@15 | 0.6847 |
+| Accuracy@6  | 0.5670 |     | Accuracy@16 | 0.6917 |
+| Accuracy@7  | 0.5880 |     | Accuracy@17 | 0.6976 |
+| Accuracy@8  | 0.6061 |     | Accuracy@18 | 0.7059 |
+| Accuracy@9  | 0.6216 |     | Accuracy@19 | 0.7123 |
+| Accuracy@10 | 0.6353 |     | Accuracy@20 | 0.7169 |
+| MAP         | 0.3701 |     | MRR         | 0.4030 |
+
+#### 性能对比分析 - MRR优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.3973 | 0.4333 | 0.3200     | 0.5678     | 0.6548      | 0.7289      |
+| GAT模型 (MRR) | 0.3701 | 0.4030 | 0.2861     | 0.5381     | 0.6353      | 0.7169      |
+| 提升百分比    | -6.8%  | -7.0%  | -10.6%     | -5.2%      | -3.0%       | -1.6%       |
+
+### Eclipse_platform_ui 数据集
+
+#### 基准模型 (SGDRegressor)
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.3450 |     | Accuracy@11 | 0.6218 |
+| Accuracy@2  | 0.4353 |     | Accuracy@12 | 0.6276 |
+| Accuracy@3  | 0.4896 |     | Accuracy@13 | 0.6333 |
+| Accuracy@4  | 0.5219 |     | Accuracy@14 | 0.6380 |
+| Accuracy@5  | 0.5470 |     | Accuracy@15 | 0.6443 |
+| Accuracy@6  | 0.5666 |     | Accuracy@16 | 0.6507 |
+| Accuracy@7  | 0.5821 |     | Accuracy@17 | 0.6562 |
+| Accuracy@8  | 0.5947 |     | Accuracy@18 | 0.6609 |
+| Accuracy@9  | 0.6048 |     | Accuracy@19 | 0.6653 |
+| Accuracy@10 | 0.6122 |     | Accuracy@20 | 0.6689 |
+| MAP         | 0.4503 |     | MRR         | 0.4371 |
+
+#### MAP优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.3401 |     | Accuracy@11 | 0.6138 |
+| Accuracy@2  | 0.4243 |     | Accuracy@12 | 0.6229 |
+| Accuracy@3  | 0.4791 |     | Accuracy@13 | 0.6289 |
+| Accuracy@4  | 0.5078 |     | Accuracy@14 | 0.6360 |
+| Accuracy@5  | 0.5327 |     | Accuracy@15 | 0.6412 |
+| Accuracy@6  | 0.5529 |     | Accuracy@16 | 0.6468 |
+| Accuracy@7  | 0.5676 |     | Accuracy@17 | 0.6522 |
+| Accuracy@8  | 0.5814 |     | Accuracy@18 | 0.6574 |
+| Accuracy@9  | 0.5942 |     | Accuracy@19 | 0.6626 |
+| Accuracy@10 | 0.6041 |     | Accuracy@20 | 0.6655 |
+| MAP         | 0.4454 |     | MRR         | 0.4296 |
+
+#### 性能对比分析 - MAP优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.4503 | 0.4371 | 0.3450     | 0.5470     | 0.6122      | 0.6689      |
+| GAT模型 (MAP) | 0.4454 | 0.4296 | 0.3401     | 0.5327     | 0.6041      | 0.6655      |
+| 提升百分比    | -1.1%  | -1.7%  | -1.4%      | -2.6%      | -1.3%       | -0.5%       |
+
+#### MRR优化的GAT模型
+
+| 属性        | 分数   |     | 属性        | 分数   |
+| ----------- | ------ | --- | ----------- | ------ |
+| Accuracy@1  | 0.3322 |     | Accuracy@11 | 0.6143 |
+| Accuracy@2  | 0.4157 |     | Accuracy@12 | 0.6208 |
+| Accuracy@3  | 0.4695 |     | Accuracy@13 | 0.6284 |
+| Accuracy@4  | 0.5025 |     | Accuracy@14 | 0.6346 |
+| Accuracy@5  | 0.5302 |     | Accuracy@15 | 0.6399 |
+| Accuracy@6  | 0.5546 |     | Accuracy@16 | 0.6464 |
+| Accuracy@7  | 0.5720 |     | Accuracy@17 | 0.6520 |
+| Accuracy@8  | 0.5849 |     | Accuracy@18 | 0.6571 |
+| Accuracy@9  | 0.5976 |     | Accuracy@19 | 0.6614 |
+| Accuracy@10 | 0.6058 |     | Accuracy@20 | 0.6650 |
+| MAP         | 0.4382 |     | MRR         | 0.4232 |
+
+#### 性能对比分析 - MRR优化
+
+| 模型          | MAP    | MRR    | Accuracy@1 | Accuracy@5 | Accuracy@10 | Accuracy@20 |
+| :------------ | :----- | :----- | :--------- | :--------- | :---------- | :---------- |
+| SGDRegressor  | 0.4503 | 0.4371 | 0.3450     | 0.5470     | 0.6122      | 0.6689      |
+| GAT模型 (MRR) | 0.4382 | 0.4232 | 0.3322     | 0.5302     | 0.6058      | 0.6650      |
+| 提升百分比    | -2.7%  | -3.2%  | -3.7%      | -3.1%      | -1.0%       | -0.6%       |
